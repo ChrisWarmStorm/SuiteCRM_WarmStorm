@@ -58,6 +58,10 @@ DocumentRoot selection:
 3. Set **Start Command** to `./railway-worker.sh`.
 4. Deploy. The worker logs each cron cycle and exit code.
 
+Worker volume mount:
+
+- Mount the same single volume at `/var/www/html/custom` so the worker reads the persisted config.
+
 Cron path selection order:
 
 - `/var/www/html/public/legacy/cron.php`
@@ -66,23 +70,19 @@ Cron path selection order:
 
 ## Volumes (Required)
 
-Railway filesystem is ephemeral. Attach volumes to the **web service** so install state and uploads persist across redeploys.
+Railway filesystem is ephemeral. In single-volume mode, you must persist only `PERSIST_CONFIG_DIR` and accept that uploads/cache/data are ephemeral.
 
 This repo layout (no `public/`):
 
-You MUST mount `PERSIST_CONFIG_DIR` (default `/var/www/html/custom`) as a Railway volume or the install will reset on redeploy. Mounting the repo root is NOT required and is NOT recommended if `PERSIST_CONFIG_DIR` is mounted.
-
-Minimum mounts:
+Required mount (the ONLY required mount):
 
 - `/var/www/html/custom` (PERSIST_CONFIG_DIR; stores `config.php` and `config_override.php`)
-- `/var/www/html/upload`
 
-Recommended mounts:
+Notes:
 
-- `/var/www/html/custom`
-- `/var/www/html/upload`
-- `/var/www/html/data`
-- `/var/www/html/cache`
+- Do NOT mount the whole `/var/www/html` root.
+- `/var/www/html/upload` is ephemeral in this mode; attachments will not persist across redeploy.
+- `/var/www/html/cache` and `/var/www/html/data` are ephemeral and safe to regenerate.
 
 Note on config persistence:
 
@@ -113,6 +113,8 @@ Web service logs must include:
 - `[entrypoint] Persisting config to: <path>`
 - `[entrypoint] config.php -> <target> (symlink)`
 - `[entrypoint] config_override.php -> <target> (symlink)`
+- `CONFIG_WRITABLE=1`
+- `OVERRIDE_WRITABLE=1`
 - `[entrypoint] Effective Listen directives: ...` (only one `Listen` line and it matches `<port>`)
 - `[entrypoint] Rewrite module enabled: true`
 

@@ -3,19 +3,36 @@ set -euo pipefail
 
 PORT="${PORT:-8080}"
 
-APP_ROOT="/var/www/html"
-DOCROOT="/var/www/html"
+APP_ROOT="${APP_ROOT:-}"
+DOCROOT="${DOCROOT:-}"
 
-if [ -d /var/www/html/public ]; then
+APP_ROOT_DEFAULTED=0
+DOCROOT_DEFAULTED=0
+
+if [ -z "${APP_ROOT}" ]; then
+  APP_ROOT="/var/www/html"
+  APP_ROOT_DEFAULTED=1
+fi
+if [ -z "${DOCROOT}" ]; then
+  DOCROOT="/var/www/html"
+  DOCROOT_DEFAULTED=1
+fi
+
+if [ "${DOCROOT_DEFAULTED}" -eq 1 ] && [ -d /var/www/html/public ]; then
   DOCROOT="/var/www/html/public"
-  if [ -d /var/www/html/public/legacy ]; then
-    APP_ROOT="/var/www/html/public/legacy"
+fi
+
+if [ "${APP_ROOT_DEFAULTED}" -eq 1 ]; then
+  if [ -d /var/www/html/public ]; then
+    if [ -d /var/www/html/public/legacy ]; then
+      APP_ROOT="/var/www/html/public/legacy"
+    else
+      APP_ROOT="/var/www/html/public"
+    fi
   else
-    APP_ROOT="/var/www/html/public"
-  fi
-else
-  if [ -d /var/www/html/legacy ]; then
-    APP_ROOT="/var/www/html/legacy"
+    if [ -d /var/www/html/legacy ]; then
+      APP_ROOT="/var/www/html/legacy"
+    fi
   fi
 fi
 
@@ -46,6 +63,11 @@ cat > /etc/apache2/conf-available/suitecrm.conf <<EOF
     AllowOverride All
     Require all granted
 </Directory>
+<Directory ${APP_ROOT}>
+    Options FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
 SetEnvIfNoCase X-Forwarded-Proto https HTTPS=on
 SetEnvIfNoCase X-Forwarded-SSL on HTTPS=on
 EOF
@@ -72,11 +94,11 @@ chmod -R u+rwX,g+rwX "${PERSIST_CONFIG_DIR}"
 echo "[entrypoint] Persisting config to: ${PERSIST_CONFIG_DIR}"
 
 if [ -f "${APP_ROOT}/config.php" ] && [ ! -L "${APP_ROOT}/config.php" ]; then
-  if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
-    mv "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php"
-  else
-    mv "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php.bak.$(date +%s)"
-  fi
+  mv "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php.bak.$(date +%s)"
+fi
+
+if [ -f "${APP_ROOT}/config_override.php" ] && [ ! -L "${APP_ROOT}/config_override.php" ]; then
+  mv "${APP_ROOT}/config_override.php" "${PERSIST_CONFIG_DIR}/config_override.php.bak.$(date +%s)"
 fi
 
 if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -84,11 +106,10 @@ if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
 fi
 
 if [ ! -f "${PERSIST_CONFIG_DIR}/config_override.php" ]; then
-  if [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
-    cp "${CONFIG_TEMPLATE_PATH}" "${PERSIST_CONFIG_DIR}/config_override.php"
-  else
-    touch "${PERSIST_CONFIG_DIR}/config_override.php"
-  fi
+  touch "${PERSIST_CONFIG_DIR}/config_override.php"
+fi
+if [ ! -s "${PERSIST_CONFIG_DIR}/config_override.php" ] && [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
+  cp "${CONFIG_TEMPLATE_PATH}" "${PERSIST_CONFIG_DIR}/config_override.php"
 fi
 
 ln -sfn "${PERSIST_CONFIG_DIR}/config.php" "${APP_ROOT}/config.php"
@@ -102,6 +123,21 @@ chmod -R u+rwX,g+rwX "${PERSIST_CONFIG_DIR}"
 
 chown -R www-data:www-data "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 chmod -R u+rwX,g+rwX "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
+
+cd "${APP_ROOT}"
+check_output="$(php -r 'clearstatcache(); echo "CONFIG_WRITABLE=".(is_writable("config.php")?"1":"0")."\n"; echo "OVERRIDE_WRITABLE=".(is_writable("config_override.php")?"1":"0")."\n";')"
+printf '%s\n' "${check_output}"
+config_ok="$(printf '%s' "${check_output}" | grep -c 'CONFIG_WRITABLE=1' || true)"
+override_ok="$(printf '%s' "${check_output}" | grep -c 'OVERRIDE_WRITABLE=1' || true)"
+if [ "${config_ok}" -ne 1 ] || [ "${override_ok}" -ne 1 ]; then
+  echo "[entrypoint] Config writability check failed"
+  echo "[entrypoint] Root + persisted config file details:"
+  ls -l "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php" "${APP_ROOT}/config_override.php" "${PERSIST_CONFIG_DIR}/config_override.php" || true
+  echo "[entrypoint] Symlink targets:"
+  readlink -f "${APP_ROOT}/config.php" || true
+  readlink -f "${APP_ROOT}/config_override.php" || true
+  exit 1
+fi
 
 echo "[entrypoint] Apache listening on: ${PORT}"
 echo "[entrypoint] DocumentRoot: ${DOCROOT}"
