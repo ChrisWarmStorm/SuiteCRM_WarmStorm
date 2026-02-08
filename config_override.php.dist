@@ -1,0 +1,55 @@
+<?php
+if (!isset($sugar_config) || !is_array($sugar_config)) {
+    $sugar_config = [];
+}
+
+if (!function_exists('suitecrm_env')) {
+    function suitecrm_env($key, array $fallbacks = [])
+    {
+        $value = getenv($key);
+        if ($value !== false && $value !== '') {
+            return $value;
+        }
+        foreach ($fallbacks as $fallback) {
+            $value = getenv($fallback);
+            if ($value !== false && $value !== '') {
+                return $value;
+            }
+        }
+        return null;
+    }
+}
+
+$dbHost = suitecrm_env('DB_HOST', ['MYSQLHOST', 'MARIADB_HOST', 'MYSQL_HOST']);
+$dbPort = suitecrm_env('DB_PORT', ['MYSQLPORT', 'MARIADB_PORT', 'MYSQL_PORT']);
+$dbName = suitecrm_env('DB_NAME', ['MYSQLDATABASE', 'MARIADB_DATABASE', 'MYSQL_DATABASE']);
+$dbUser = suitecrm_env('DB_USER', ['MYSQLUSER', 'MARIADB_USER', 'MYSQL_USER']);
+$dbPassword = suitecrm_env('DB_PASSWORD', ['MYSQLPASSWORD', 'MARIADB_PASSWORD', 'MYSQL_PASSWORD']);
+
+if ($dbHost !== null) {
+    $sugar_config['dbconfig']['db_host_name'] = $dbHost;
+}
+if ($dbPort !== null) {
+    $sugar_config['dbconfig']['db_port'] = $dbPort;
+}
+if ($dbName !== null) {
+    $sugar_config['dbconfig']['db_name'] = $dbName;
+}
+if ($dbUser !== null) {
+    $sugar_config['dbconfig']['db_user_name'] = $dbUser;
+}
+if ($dbPassword !== null) {
+    $sugar_config['dbconfig']['db_password'] = $dbPassword;
+}
+
+if ($dbHost !== null && empty($sugar_config['dbconfig']['db_type'])) {
+    $sugar_config['dbconfig']['db_type'] = 'mysqli';
+}
+if ($dbHost !== null && empty($sugar_config['dbconfig']['db_manager'])) {
+    $sugar_config['dbconfig']['db_manager'] = 'MysqliManager';
+}
+
+$appUrl = suitecrm_env('APP_URL');
+if ($appUrl !== null) {
+    $sugar_config['site_url'] = rtrim($appUrl, '/');
+}
