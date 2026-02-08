@@ -49,7 +49,11 @@ cat > /etc/apache2/conf-available/suitecrm.conf <<EOF
 SetEnvIfNoCase X-Forwarded-Proto https HTTPS=on
 SetEnvIfNoCase X-Forwarded-SSL on HTTPS=on
 EOF
-a2enconf suitecrm >/dev/null
+
+if [ -e /etc/apache2/conf-enabled/suitecrm.conf ] && [ ! -L /etc/apache2/conf-enabled/suitecrm.conf ]; then
+  rm -f /etc/apache2/conf-enabled/suitecrm.conf
+fi
+ln -sfn ../conf-available/suitecrm.conf /etc/apache2/conf-enabled/suitecrm.conf
 
 if ! grep -q "ServerName" /etc/apache2/apache2.conf; then
   echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf
@@ -95,6 +99,16 @@ if [ -f /etc/apache2/mods-enabled/rewrite.load ]; then
   echo "[entrypoint] Rewrite module enabled: true"
 else
   echo "[entrypoint] Rewrite module enabled: false"
+fi
+
+a2dismod mpm_event mpm_worker >/dev/null 2>&1 || true
+a2enmod mpm_prefork >/dev/null 2>&1 || true
+echo "[entrypoint] Enabled MPM modules:"
+ls -1 /etc/apache2/mods-enabled | grep '^mpm_' || true
+
+if ! apache2ctl -t; then
+  echo "[entrypoint] Apache config test failed"
+  exit 1
 fi
 
 exec "$@"

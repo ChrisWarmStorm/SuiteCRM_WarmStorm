@@ -27,6 +27,8 @@ RUN apt-get update \
         soap \
         xml \
         zip \
+    && a2dismod mpm_event mpm_worker || true \
+    && a2enmod mpm_prefork \
     && a2enmod rewrite headers setenvif \
     && rm -rf /var/lib/apt/lists/*
 
