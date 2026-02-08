@@ -66,24 +66,42 @@ CONFIG_TEMPLATE_PATH="/var/www/html/config_override.php.dist"
 mkdir -p "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 mkdir -p "${PERSIST_CONFIG_DIR}"
 
-for cfg in config.php config_override.php; do
-  target="${PERSIST_CONFIG_DIR}/${cfg}"
-  if [ -f "${APP_ROOT}/${cfg}" ] && [ ! -f "${target}" ]; then
-    cp "${APP_ROOT}/${cfg}" "${target}"
-  fi
-  if [ "${cfg}" = "config_override.php" ] && [ ! -f "${target}" ] && [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
-    cp "${CONFIG_TEMPLATE_PATH}" "${target}"
-  fi
-  if [ ! -L "${APP_ROOT}/${cfg}" ]; then
-    if [ -f "${APP_ROOT}/${cfg}" ]; then
-      rm -f "${APP_ROOT}/${cfg}"
-    fi
-    ln -s "${target}" "${APP_ROOT}/${cfg}"
-  fi
-done
+chown -R www-data:www-data "${PERSIST_CONFIG_DIR}"
+chmod -R u+rwX,g+rwX "${PERSIST_CONFIG_DIR}"
 
-chown -R www-data:www-data "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload" "${PERSIST_CONFIG_DIR}"
-chmod -R u+rwX,g+rwX "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload" "${PERSIST_CONFIG_DIR}"
+echo "[entrypoint] Persisting config to: ${PERSIST_CONFIG_DIR}"
+
+if [ -f "${APP_ROOT}/config.php" ] && [ ! -L "${APP_ROOT}/config.php" ]; then
+  if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
+    mv "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php"
+  else
+    mv "${APP_ROOT}/config.php" "${PERSIST_CONFIG_DIR}/config.php.bak.$(date +%s)"
+  fi
+fi
+
+if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  touch "${PERSIST_CONFIG_DIR}/config.php"
+fi
+
+if [ ! -f "${PERSIST_CONFIG_DIR}/config_override.php" ]; then
+  if [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
+    cp "${CONFIG_TEMPLATE_PATH}" "${PERSIST_CONFIG_DIR}/config_override.php"
+  else
+    touch "${PERSIST_CONFIG_DIR}/config_override.php"
+  fi
+fi
+
+ln -sfn "${PERSIST_CONFIG_DIR}/config.php" "${APP_ROOT}/config.php"
+ln -sfn "${PERSIST_CONFIG_DIR}/config_override.php" "${APP_ROOT}/config_override.php"
+
+echo "[entrypoint] config.php -> ${PERSIST_CONFIG_DIR}/config.php (symlink)"
+echo "[entrypoint] config_override.php -> ${PERSIST_CONFIG_DIR}/config_override.php (symlink)"
+
+chown -R www-data:www-data "${PERSIST_CONFIG_DIR}"
+chmod -R u+rwX,g+rwX "${PERSIST_CONFIG_DIR}"
+
+chown -R www-data:www-data "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
+chmod -R u+rwX,g+rwX "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 
 echo "[entrypoint] Apache listening on: ${PORT}"
 echo "[entrypoint] DocumentRoot: ${DOCROOT}"

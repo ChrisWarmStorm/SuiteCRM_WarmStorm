@@ -66,29 +66,15 @@ Cron path selection order:
 
 ## Volumes (Required)
 
-Railway filesystem is ephemeral. Attach volumes to the **web service** so install state and uploads persist across redeploys. Use the paths for the layout your repo uses.
+Railway filesystem is ephemeral. Attach volumes to the **web service** so install state and uploads persist across redeploys.
 
-You MUST mount `PERSIST_CONFIG_DIR` (default `${APP_ROOT}/custom`) as a Railway volume or the install will reset on redeploy. Mounting the repo root is NOT required if `PERSIST_CONFIG_DIR` is mounted.
+This repo layout (no `public/`):
 
-Layout 1 (SuiteCRM 8 typical, has `public/legacy`):
-
-Minimum mounts:
-
-- `/var/www/html/public/legacy/custom` (stores `config.php` via symlink)
-- `/var/www/html/public/legacy/upload`
-
-Recommended mounts:
-
-- `/var/www/html/public/legacy/custom`
-- `/var/www/html/public/legacy/upload`
-- `/var/www/html/public/legacy/data`
-- `/var/www/html/public/legacy/cache`
-
-Layout 2 (no `public/`, this repo layout):
+You MUST mount `PERSIST_CONFIG_DIR` (default `/var/www/html/custom`) as a Railway volume or the install will reset on redeploy. Mounting the repo root is NOT required and is NOT recommended if `PERSIST_CONFIG_DIR` is mounted.
 
 Minimum mounts:
 
-- `/var/www/html/custom` (stores `config.php` via symlink)
+- `/var/www/html/custom` (PERSIST_CONFIG_DIR; stores `config.php` and `config_override.php`)
 - `/var/www/html/upload`
 
 Recommended mounts:
@@ -124,6 +110,9 @@ Web service logs must include:
 - `[entrypoint] DocumentRoot: <path>`
 - `[entrypoint] APP_ROOT: <path>`
 - `[entrypoint] PERSIST_CONFIG_DIR: <path>`
+- `[entrypoint] Persisting config to: <path>`
+- `[entrypoint] config.php -> <target> (symlink)`
+- `[entrypoint] config_override.php -> <target> (symlink)`
 - `[entrypoint] Effective Listen directives: ...` (only one `Listen` line and it matches `<port>`)
 - `[entrypoint] Rewrite module enabled: true`
 
