@@ -26,6 +26,37 @@ $dbName = suitecrm_env('DB_NAME', ['MYSQLDATABASE', 'MARIADB_DATABASE', 'MYSQL_D
 $dbUser = suitecrm_env('DB_USER', ['MYSQLUSER', 'MARIADB_USER', 'MYSQL_USER']);
 $dbPassword = suitecrm_env('DB_PASSWORD', ['MYSQLPASSWORD', 'MARIADB_PASSWORD', 'MYSQL_PASSWORD']);
 
+$dbType = null;
+$dbManager = null;
+$dbUrl = suitecrm_env('DATABASE_URL');
+if ($dbUrl !== null) {
+    $parts = parse_url($dbUrl);
+    if (is_array($parts)) {
+        $scheme = isset($parts['scheme']) ? strtolower($parts['scheme']) : '';
+        if (in_array($scheme, ['mysql', 'mariadb'], true)) {
+            $dbType = 'mysqli';
+            $dbManager = 'MysqliManager';
+            $dbPort = $dbPort ?? '3306';
+        }
+
+        if (!empty($parts['host'])) {
+            $dbHost = $parts['host'];
+        }
+        if (!empty($parts['port'])) {
+            $dbPort = (string)$parts['port'];
+        }
+        if (!empty($parts['path'])) {
+            $dbName = ltrim($parts['path'], '/');
+        }
+        if (!empty($parts['user'])) {
+            $dbUser = urldecode($parts['user']);
+        }
+        if (!empty($parts['pass'])) {
+            $dbPassword = urldecode($parts['pass']);
+        }
+    }
+}
+
 if ($dbHost !== null) {
     $sugar_config['dbconfig']['db_host_name'] = $dbHost;
 }
@@ -42,14 +73,14 @@ if ($dbPassword !== null) {
     $sugar_config['dbconfig']['db_password'] = $dbPassword;
 }
 
-if ($dbHost !== null && empty($sugar_config['dbconfig']['db_type'])) {
-    $sugar_config['dbconfig']['db_type'] = 'mysqli';
+if ($dbType !== null && empty($sugar_config['dbconfig']['db_type'])) {
+    $sugar_config['dbconfig']['db_type'] = $dbType;
 }
-if ($dbHost !== null && empty($sugar_config['dbconfig']['db_manager'])) {
-    $sugar_config['dbconfig']['db_manager'] = 'MysqliManager';
+if ($dbManager !== null && empty($sugar_config['dbconfig']['db_manager'])) {
+    $sugar_config['dbconfig']['db_manager'] = $dbManager;
 }
 
-$appUrl = suitecrm_env('APP_URL');
+$appUrl = suitecrm_env('PUBLIC_URL', ['SUITECRM_SITE_URL', 'APP_URL']);
 if ($appUrl !== null) {
     $sugar_config['site_url'] = rtrim($appUrl, '/');
 }

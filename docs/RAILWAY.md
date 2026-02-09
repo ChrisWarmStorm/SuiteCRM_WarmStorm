@@ -20,9 +20,11 @@ Set these in **both** services:
 - `DB_NAME`
 - `DB_USER`
 - `DB_PASSWORD`
-- `SUITECRM_SITE_URL` (public HTTPS base URL of the web service, used to set `site_url`)
-
-Database must be MySQL or MariaDB. Postgres is not supported for SuiteCRM.
+- `PUBLIC_URL` (public HTTPS base URL of the web service, used to set `site_url`)
+- `DB_REQUIRE_PERSISTENT` (default `1`)
+- `DB_ALLOW_SCHEMA_INIT` (default `0`, set to `1` only for first-time install)
+- `DB_FINGERPRINT_TABLE` (default `users`)
+- `DATABASE_URL` (optional; `mysql://user:pass@host:port/dbname`, only used if DB_* values are unset)
 
 Railway MySQL/MariaDB mapping (plugin var names vary by plugin/version):
 
@@ -39,7 +41,6 @@ Railway MySQL/MariaDB mapping (plugin var names vary by plugin/version):
 - `SLEEP_SECONDS=60` to change the worker loop interval.
 - `APP_DIR=/var/www/html` if your app path differs (rare).
 - `PERSIST_CONFIG_DIR=/var/www/html/custom` to override where `config.php` and `config_override.php` are persisted.
-- `SUITECRM_DISABLE_INSTALLER=0` to skip auto-disabling the installer after install (default is enabled).
 
 ## Web Service Deployment
 
@@ -89,20 +90,22 @@ Note on config persistence:
 
 - The entrypoint seeds `config_override.php` from `config_override.php.dist` and symlinks `config.php` and `config_override.php` into `PERSIST_CONFIG_DIR` (default is `custom`).
 - To persist config, mount a volume for the `custom` directory (or set `PERSIST_CONFIG_DIR` to a different mounted path).
- - The entrypoint will disable the installer after install when it detects `installer_locked` in `config.php` (can be disabled via `SUITECRM_DISABLE_INSTALLER=0`).
+ - The entrypoint will disable the installer after install when it detects an existing DB schema.
 
 ## First-Time Install
 
+1. Set `DB_ALLOW_SCHEMA_INIT=1` for the initial install.
 1. Open the web service public domain.
 2. Follow the SuiteCRM installer.
 3. Choose **MySQL** as the database type.
 4. Use the same `DB_*` values configured in Railway.
-5. Set the **Site URL** to `SUITECRM_SITE_URL`.
+5. Set the **Site URL** to `PUBLIC_URL`.
+6. After install, set `DB_ALLOW_SCHEMA_INIT=0` and redeploy.
 
 ## Reverse Proxy and HTTPS
 
 - Apache sets `HTTPS=on` and `SERVER_PORT=443` when `X-Forwarded-Proto: https` is present.
-- Ensure `SUITECRM_SITE_URL` is the public HTTPS URL to avoid redirect loops.
+- Ensure `PUBLIC_URL` is the public HTTPS URL to avoid redirect loops.
 
 ## Acceptance Checklist
 
@@ -115,8 +118,8 @@ Web service logs must include:
 - `[entrypoint] Persisting config to: <path>`
 - `[entrypoint] config.php -> <target> (symlink)`
 - `[entrypoint] config_override.php -> <target> (symlink)`
-- `CONFIG_WRITABLE=1 CONFIG_READABLE=1`
-- `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`
+- `CONFIG_TARGET_READABLE=1 CONFIG_TARGET_WRITABLE=1`
+- `OVERRIDE_TARGET_READABLE=1 OVERRIDE_TARGET_WRITABLE=1`
 - `[entrypoint] Effective Listen directives: ...` (only one `Listen` line and it matches `<port>`)
 - `[entrypoint] Rewrite module enabled: true`
 
@@ -136,13 +139,13 @@ UI behavior:
 
 Installer disable log (after successful install):
 
-- `[entrypoint] Installer locked; disabled /var/www/html/install -> /var/www/html/install.disabled`
+- `[entrypoint] Installer disabled due to existing DB schema`
 
 ## Troubleshooting
 
 Redirect loops:
 
-- Ensure `SUITECRM_SITE_URL` matches the public domain scheme (https).
+- Ensure `PUBLIC_URL` matches the public domain scheme (https).
 - Check that the proxy header is set in logs and `site_url` is correct.
 
 404s or missing assets:
@@ -154,7 +157,7 @@ Installer not persisting after redeploy:
 
 - Confirm volumes are mounted on the correct paths for your layout.
 - Verify `custom` is volume-backed so `config.php` persists.
- - Check logs for `CONFIG_WRITABLE=1 CONFIG_READABLE=1` and `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`.
+- Check logs for `CONFIG_TARGET_READABLE=1 CONFIG_TARGET_WRITABLE=1` and `OVERRIDE_TARGET_READABLE=1 OVERRIDE_TARGET_WRITABLE=1`.
 
 Installer loop right after install:
 
@@ -162,8 +165,8 @@ Installer loop right after install:
 - Check logs for:
   - `[entrypoint] Persisting config to: /var/www/html/custom`
   - `[entrypoint] config.php -> /var/www/html/custom/config.php (symlink)`
-  - `CONFIG_WRITABLE=1 CONFIG_READABLE=1`
-  - `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`
+  - `CONFIG_TARGET_READABLE=1 CONFIG_TARGET_WRITABLE=1`
+  - `OVERRIDE_TARGET_READABLE=1 OVERRIDE_TARGET_WRITABLE=1`
 - If any of the read/write checks are `0`, the container will fail fast with diagnostics. Fix the volume mount and redeploy.
 
 Cron not running:
