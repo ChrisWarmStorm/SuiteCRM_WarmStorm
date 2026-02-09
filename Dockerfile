@@ -35,6 +35,10 @@ RUN apt-get update \
 COPY --from=composer:2.7 /usr/bin/composer /usr/local/bin/composer
 COPY . /var/www/html
 
+RUN mkdir -p /usr/local/etc/php/conf.d /etc/php/8.2/apache2/conf.d
+COPY docker/php/99-suitecrm.ini /usr/local/etc/php/conf.d/99-suitecrm.ini
+COPY docker/php/99-suitecrm.ini /etc/php/8.2/apache2/conf.d/99-suitecrm.ini
+
 RUN composer install --no-dev --prefer-dist --no-interaction --no-progress --optimize-autoloader \
     && mkdir -p /var/www/html/cache /var/www/html/custom /var/www/html/data /var/www/html/upload \
     && chown -R www-data:www-data /var/www/html \

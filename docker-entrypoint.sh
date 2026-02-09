@@ -143,6 +143,12 @@ echo "[entrypoint] Apache listening on: ${PORT}"
 echo "[entrypoint] DocumentRoot: ${DOCROOT}"
 echo "[entrypoint] APP_ROOT: ${APP_ROOT}"
 echo "[entrypoint] PERSIST_CONFIG_DIR: ${PERSIST_CONFIG_DIR}"
+php_info="$(php -r 'echo "upload_max_filesize=".ini_get("upload_max_filesize")."\n"; echo "post_max_size=".ini_get("post_max_size")."\n"; echo "memory_limit=".ini_get("memory_limit")."\n"; echo "output_buffering=".ini_get("output_buffering")."\n"; echo "display_errors=".ini_get("display_errors")."\n";')"
+while IFS= read -r line; do
+  if [ -n "${line}" ]; then
+    echo "[entrypoint] PHP: ${line}"
+  fi
+done <<< "${php_info}"
 listen_lines="$(grep -R -n -E '^[[:space:]]*Listen[[:space:]]+' /etc/apache2 2>/dev/null | tr '\n' '; ')"
 if [ -n "${listen_lines}" ]; then
   echo "[entrypoint] Effective Listen directives: ${listen_lines}"
