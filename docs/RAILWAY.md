@@ -39,6 +39,7 @@ Railway MySQL/MariaDB mapping (plugin var names vary by plugin/version):
 - `SLEEP_SECONDS=60` to change the worker loop interval.
 - `APP_DIR=/var/www/html` if your app path differs (rare).
 - `PERSIST_CONFIG_DIR=/var/www/html/custom` to override where `config.php` and `config_override.php` are persisted.
+- `SUITECRM_DISABLE_INSTALLER=0` to skip auto-disabling the installer after install (default is enabled).
 
 ## Web Service Deployment
 
@@ -88,6 +89,7 @@ Note on config persistence:
 
 - The entrypoint seeds `config_override.php` from `config_override.php.dist` and symlinks `config.php` and `config_override.php` into `PERSIST_CONFIG_DIR` (default is `custom`).
 - To persist config, mount a volume for the `custom` directory (or set `PERSIST_CONFIG_DIR` to a different mounted path).
+ - The entrypoint will disable the installer after install when it detects `installer_locked` in `config.php` (can be disabled via `SUITECRM_DISABLE_INSTALLER=0`).
 
 ## First-Time Install
 
@@ -113,8 +115,8 @@ Web service logs must include:
 - `[entrypoint] Persisting config to: <path>`
 - `[entrypoint] config.php -> <target> (symlink)`
 - `[entrypoint] config_override.php -> <target> (symlink)`
-- `CONFIG_WRITABLE=1`
-- `OVERRIDE_WRITABLE=1`
+- `CONFIG_WRITABLE=1 CONFIG_READABLE=1`
+- `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`
 - `[entrypoint] Effective Listen directives: ...` (only one `Listen` line and it matches `<port>`)
 - `[entrypoint] Rewrite module enabled: true`
 
@@ -132,6 +134,10 @@ UI behavior:
 - After install + redeploy with volume mounted, installer does not re-run.
 - Worker runs every 60 seconds (or your `SLEEP_SECONDS`).
 
+Installer disable log (after successful install):
+
+- `[entrypoint] Installer locked; disabled /var/www/html/install -> /var/www/html/install.disabled`
+
 ## Troubleshooting
 
 Redirect loops:
@@ -148,6 +154,17 @@ Installer not persisting after redeploy:
 
 - Confirm volumes are mounted on the correct paths for your layout.
 - Verify `custom` is volume-backed so `config.php` persists.
+ - Check logs for `CONFIG_WRITABLE=1 CONFIG_READABLE=1` and `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`.
+
+Installer loop right after install:
+
+- Ensure `/var/www/html/custom` is the only mounted volume and is writable.
+- Check logs for:
+  - `[entrypoint] Persisting config to: /var/www/html/custom`
+  - `[entrypoint] config.php -> /var/www/html/custom/config.php (symlink)`
+  - `CONFIG_WRITABLE=1 CONFIG_READABLE=1`
+  - `OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1`
+- If any of the read/write checks are `0`, the container will fail fast with diagnostics. Fix the volume mount and redeploy.
 
 Cron not running:
 
