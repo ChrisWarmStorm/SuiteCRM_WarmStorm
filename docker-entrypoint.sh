@@ -77,9 +77,14 @@ if [ -e /etc/apache2/conf-enabled/suitecrm.conf ] && [ ! -L /etc/apache2/conf-en
 fi
 ln -sfn ../conf-available/suitecrm.conf /etc/apache2/conf-enabled/suitecrm.conf
 
+servername_conf_enabled="/etc/apache2/conf-enabled/servername.conf"
+if [ -e "${servername_conf_enabled}" ] && [ ! -L "${servername_conf_enabled}" ]; then
+  echo "[entrypoint] WARN: Conf servername not properly enabled: ${servername_conf_enabled} is a real file; replacing"
+  rm -f "${servername_conf_enabled}"
+fi
 if ! grep -q "ServerName" /etc/apache2/apache2.conf; then
   echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf
-  a2enconf servername >/dev/null
+  a2enconf servername >/dev/null 2>&1 || true
 fi
 
 PERSIST_CONFIG_DIR="${PERSIST_CONFIG_DIR:-${APP_ROOT}/custom}"
@@ -113,82 +118,93 @@ if [ -f "${APP_ROOT}/config_override.php" ] && [ ! -L "${APP_ROOT}/config_overri
   mv "${APP_ROOT}/config_override.php" "${PERSIST_CONFIG_DIR}/config_override.php.bak.$(date +%s)"
 fi
 
-if [ ! -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
-  install -o www-data -g www-data -m 664 /dev/null "${PERSIST_CONFIG_DIR}/config.php"
+if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  config_size_bytes="$(wc -c < "${PERSIST_CONFIG_DIR}/config.php" 2>/dev/null | tr -d ' ')"
+  case "${config_size_bytes}" in
+    ''|*[!0-9]*) config_size_bytes="0" ;;
+  esac
+  if [ "${config_size_bytes}" = "0" ]; then
+    echo "[entrypoint] zero-byte persisted config.php detected; removing to avoid installer loop"
+    rm -f "${PERSIST_CONFIG_DIR}/config.php"
+  fi
 fi
 
-if [ ! -f "${PERSIST_CONFIG_DIR}/config_override.php" ]; then
-  install -o www-data -g www-data -m 664 /dev/null "${PERSIST_CONFIG_DIR}/config_override.php"
-fi
-if [ ! -s "${PERSIST_CONFIG_DIR}/config_override.php" ] && [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
+if [ -f "${PERSIST_CONFIG_DIR}/config_override.php" ] && [ ! -s "${PERSIST_CONFIG_DIR}/config_override.php" ] && [ -f "${CONFIG_TEMPLATE_PATH}" ]; then
   if ! su -s /bin/sh www-data -c "cp '${CONFIG_TEMPLATE_PATH}' '${PERSIST_CONFIG_DIR}/config_override.php'"; then
     echo "[entrypoint] Warning: failed to seed config_override.php from ${CONFIG_TEMPLATE_PATH}"
   fi
 fi
 
-ln -sfn "${PERSIST_CONFIG_DIR}/config.php" "${APP_ROOT}/config.php"
-ln -sfn "${PERSIST_CONFIG_DIR}/config_override.php" "${APP_ROOT}/config_override.php"
+if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  ln -sfn "${PERSIST_CONFIG_DIR}/config.php" "${APP_ROOT}/config.php"
+  resolved_config="$(readlink -f "${APP_ROOT}/config.php" 2>/dev/null || true)"
+  if [ -z "${resolved_config}" ]; then
+    resolved_config="${PERSIST_CONFIG_DIR}/config.php"
+  fi
+  echo "[entrypoint] config.php -> ${resolved_config} (symlink)"
+else
+  rm -f "${APP_ROOT}/config.php"
+  echo "[entrypoint] config.php missing in ${PERSIST_CONFIG_DIR}; installer may run"
+fi
 
-resolved_config="$(readlink -f "${APP_ROOT}/config.php" 2>/dev/null || true)"
-if [ -z "${resolved_config}" ]; then
-  resolved_config="${PERSIST_CONFIG_DIR}/config.php"
+if [ -f "${PERSIST_CONFIG_DIR}/config_override.php" ]; then
+  ln -sfn "${PERSIST_CONFIG_DIR}/config_override.php" "${APP_ROOT}/config_override.php"
+  resolved_override="$(readlink -f "${APP_ROOT}/config_override.php" 2>/dev/null || true)"
+  if [ -z "${resolved_override}" ]; then
+    resolved_override="${PERSIST_CONFIG_DIR}/config_override.php"
+  fi
+  echo "[entrypoint] config_override.php -> ${resolved_override} (symlink)"
+else
+  rm -f "${APP_ROOT}/config_override.php"
+  echo "[entrypoint] config_override.php not present in ${PERSIST_CONFIG_DIR}"
 fi
-resolved_override="$(readlink -f "${APP_ROOT}/config_override.php" 2>/dev/null || true)"
-if [ -z "${resolved_override}" ]; then
-  resolved_override="${PERSIST_CONFIG_DIR}/config_override.php"
-fi
-echo "[entrypoint] config.php -> ${resolved_config} (symlink)"
-echo "[entrypoint] config_override.php -> ${resolved_override} (symlink)"
 
 chown -R www-data:www-data "${APP_ROOT}/cache" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 chmod -R u+rwX,g+rwX "${APP_ROOT}/cache" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 chown -R www-data:www-data "${APP_ROOT}/custom"
 chmod -R u+rwX,g+rwX "${APP_ROOT}/custom"
 
-config_path="${APP_ROOT}/config.php"
-override_path="${APP_ROOT}/config_override.php"
-check_output="$(su -s /bin/sh www-data -c "php -r 'clearstatcache(); \$config=\"${config_path}\"; \$override=\"${override_path}\"; echo \"CONFIG_WRITABLE=\".(is_writable(\$config)?\"1\":\"0\").\" CONFIG_READABLE=\".(is_readable(\$config)?\"1\":\"0\").\"\\n\"; echo \"OVERRIDE_WRITABLE=\".(is_writable(\$override)?\"1\":\"0\").\" OVERRIDE_READABLE=\".(is_readable(\$override)?\"1\":\"0\").\"\\n\";'")"
-printf '%s\n' "${check_output}"
-config_ok="$(printf '%s' "${check_output}" | grep -c 'CONFIG_WRITABLE=1 CONFIG_READABLE=1' || true)"
-override_ok="$(printf '%s' "${check_output}" | grep -c 'OVERRIDE_WRITABLE=1 OVERRIDE_READABLE=1' || true)"
-if [ "${config_ok}" -ne 1 ] || [ "${override_ok}" -ne 1 ]; then
+config_target="${PERSIST_CONFIG_DIR}/config.php"
+override_target="${PERSIST_CONFIG_DIR}/config_override.php"
+
+config_target_readable=0
+config_target_writable=0
+if [ -f "${config_target}" ]; then
+  if su -s /bin/sh -c "test -r '${config_target}'" www-data; then
+    config_target_readable=1
+  fi
+  if su -s /bin/sh -c "test -w '${config_target}'" www-data; then
+    config_target_writable=1
+  fi
+fi
+
+override_target_readable=0
+override_target_writable=0
+if [ -f "${override_target}" ]; then
+  if su -s /bin/sh -c "test -r '${override_target}'" www-data; then
+    override_target_readable=1
+  fi
+  if su -s /bin/sh -c "test -w '${override_target}'" www-data; then
+    override_target_writable=1
+  fi
+fi
+
+echo "CONFIG_TARGET_READABLE=${config_target_readable} CONFIG_TARGET_WRITABLE=${config_target_writable}"
+echo "OVERRIDE_TARGET_READABLE=${override_target_readable} OVERRIDE_TARGET_WRITABLE=${override_target_writable}"
+
+config_access_ok=1
+if [ -f "${config_target}" ]; then
+  if [ "${config_target_readable}" -ne 1 ] || [ "${config_target_writable}" -ne 1 ]; then
+    config_access_ok=0
+  fi
+fi
+if [ -f "${override_target}" ]; then
+  if [ "${override_target_readable}" -ne 1 ] || [ "${override_target_writable}" -ne 1 ]; then
+    config_access_ok=0
+  fi
+fi
+if [ "${config_access_ok}" -ne 1 ]; then
   echo "[entrypoint] Config access check failed"
-  echo "[entrypoint] www-data uid/gid:"
-  su -s /bin/sh www-data -c 'id -u; id -g' || true
-  echo "[entrypoint] Root + persisted config file details:"
-  ls -la "${APP_ROOT}/config.php" "${APP_ROOT}/config_override.php" "${PERSIST_CONFIG_DIR}/config.php" "${PERSIST_CONFIG_DIR}/config_override.php" || true
-  if command -v stat >/dev/null 2>&1; then
-    stat "${APP_ROOT}/config.php" "${APP_ROOT}/config_override.php" "${PERSIST_CONFIG_DIR}/config.php" "${PERSIST_CONFIG_DIR}/config_override.php" || true
-  fi
-  exit 1
-fi
-
-config_size="$(su -s /bin/sh www-data -c "wc -c < '${config_path}' 2>/dev/null | tr -d ' '")"
-case "${config_size}" in
-  ''|*[!0-9]*) config_size="0" ;;
-esac
-
-config_write_test=1
-if [ "${config_size}" = "0" ]; then
-  if su -s /bin/sh www-data -c "CONFIG_PATH='${config_path}' php -r 'exit(file_put_contents(getenv(\"CONFIG_PATH\"), \"<?php\\n// bootstrap\\n\")===false?1:0);'"; then
-    if ! su -s /bin/sh www-data -c "CONFIG_PATH='${config_path}' php -r 'file_put_contents(getenv(\"CONFIG_PATH\"), \"\");'"; then
-      config_write_test=0
-    fi
-  else
-    config_write_test=0
-  fi
-fi
-
-override_write_test=1
-if ! su -s /bin/sh www-data -c "OVERRIDE_PATH='${override_path}' php -r '\$p=getenv(\"OVERRIDE_PATH\"); \$orig=@file_get_contents(\$p); if(\$orig===false){exit(1);} if(file_put_contents(\$p, \$orig.\"\\n// write test\\n\")===false){exit(1);} if(file_put_contents(\$p, \$orig)===false){exit(1);} exit(0);'"; then
-  override_write_test=0
-fi
-
-echo "CONFIG_WRITE_TEST=${config_write_test}"
-echo "OVERRIDE_WRITE_TEST=${override_write_test}"
-
-if [ "${config_write_test}" -ne 1 ] || [ "${override_write_test}" -ne 1 ]; then
-  echo "[entrypoint] Config write test failed"
   echo "[entrypoint] www-data uid/gid:"
   su -s /bin/sh www-data -c 'id -u; id -g' || true
   echo "[entrypoint] Root + persisted config file details:"
@@ -204,15 +220,15 @@ installer_disable_reason=""
 if [ "${SUITECRM_DISABLE_INSTALLER}" = "0" ]; then
   installer_disable_reason="disabled by env"
 else
-  if su -s /bin/sh www-data -c "test -r '${APP_ROOT}/config.php'"; then
-    config_size_bytes="$(su -s /bin/sh www-data -c "wc -c < '${APP_ROOT}/config.php' 2>/dev/null | tr -d ' '")"
+  if su -s /bin/sh www-data -c "test -r '${config_target}'"; then
+    config_size_bytes="$(su -s /bin/sh www-data -c "wc -c < '${config_target}' 2>/dev/null | tr -d ' '")"
     case "${config_size_bytes}" in
       ''|*[!0-9]*) config_size_bytes="0" ;;
     esac
     if [ "${config_size_bytes}" -le 2048 ]; then
       installer_disable_reason="small config"
     else
-      if su -s /bin/sh www-data -c "grep -q -E \"installer_locked.*(true|1)\" '${APP_ROOT}/config.php'"; then
+      if su -s /bin/sh www-data -c "grep -q -E \"installer_locked.*(true|1)\" '${config_target}'"; then
         if [ -d "${APP_ROOT}/install" ] && [ ! -e "${APP_ROOT}/install.disabled" ]; then
           mv "${APP_ROOT}/install" "${APP_ROOT}/install.disabled"
           su -s /bin/sh www-data -c "touch '${PERSIST_CONFIG_DIR}/install.disabled.marker'" || true
