@@ -87,6 +87,16 @@ if ! grep -q "ServerName" /etc/apache2/apache2.conf; then
   a2enconf servername >/dev/null 2>&1 || true
 fi
 
+railway_forwarded_conf="/etc/apache2/conf-available/railway-forwarded-https.conf"
+if [ -f "${railway_forwarded_conf}" ]; then
+  a2enconf railway-forwarded-https >/dev/null 2>&1 || true
+  if [ -L /etc/apache2/conf-enabled/railway-forwarded-https.conf ]; then
+    echo "[entrypoint] railway-forwarded-https enabled: 1"
+  else
+    echo "[entrypoint] railway-forwarded-https enabled: 0"
+  fi
+fi
+
 PERSIST_CONFIG_DIR="${PERSIST_CONFIG_DIR:-${APP_ROOT}/custom}"
 CONFIG_TEMPLATE_PATH="${APP_ROOT}/config_override.php.dist"
 
@@ -133,6 +143,51 @@ if [ -f "${PERSIST_CONFIG_DIR}/config_override.php" ] && [ ! -s "${PERSIST_CONFI
   if ! su -s /bin/sh www-data -c "cp '${CONFIG_TEMPLATE_PATH}' '${PERSIST_CONFIG_DIR}/config_override.php'"; then
     echo "[entrypoint] Warning: failed to seed config_override.php from ${CONFIG_TEMPLATE_PATH}"
   fi
+fi
+
+suitecrm_site_url_raw="${SUITECRM_SITE_URL:-}"
+if [ -n "${suitecrm_site_url_raw}" ]; then
+  suitecrm_site_url="$(printf '%s' "${suitecrm_site_url_raw}" | sed -E 's:/*$::')"
+  echo "[entrypoint] SUITECRM_SITE_URL=${suitecrm_site_url}"
+
+  override_target_path="${PERSIST_CONFIG_DIR}/config_override.php"
+  if [ ! -f "${override_target_path}" ]; then
+    printf "<?php\n" > "${override_target_path}"
+  fi
+  if ! head -n 1 "${override_target_path}" | grep -q "^<\\?php"; then
+    tmp_override="$(mktemp)"
+    printf "<?php\n" > "${tmp_override}"
+    cat "${override_target_path}" >> "${tmp_override}"
+    mv "${tmp_override}" "${override_target_path}"
+  fi
+
+  override_marker_begin="// BEGIN SUITECRM_SITE_URL"
+  override_marker_end="// END SUITECRM_SITE_URL"
+  tmp_override="$(mktemp)"
+  awk -v begin="${override_marker_begin}" -v end="${override_marker_end}" '
+    $0 == begin {skip=1; next}
+    $0 == end {skip=0; next}
+    !skip {print}
+  ' "${override_target_path}" > "${tmp_override}"
+
+  cat >> "${tmp_override}" <<EOF
+${override_marker_begin}
+\$sugar_config['site_url'] = '${suitecrm_site_url}';
+if (!empty(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower(\$_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https') {
+    \$_SERVER['HTTPS'] = 'on';
+    \$_SERVER['SERVER_PORT'] = '443';
+}
+if (!empty(\$_SERVER['HTTP_X_FORWARDED_HOST'])) {
+    \$_SERVER['HTTP_HOST'] = \$_SERVER['HTTP_X_FORWARDED_HOST'];
+}
+${override_marker_end}
+EOF
+
+  mv "${tmp_override}" "${override_target_path}"
+  chown www-data:www-data "${override_target_path}" || true
+  chmod 664 "${override_target_path}" || true
+  echo "[entrypoint] site_url override applied: ${suitecrm_site_url}"
+  echo "[entrypoint] proxy https support enabled: 1"
 fi
 
 if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then

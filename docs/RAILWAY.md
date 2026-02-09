@@ -20,7 +20,7 @@ Set these in **both** services:
 - `DB_NAME`
 - `DB_USER`
 - `DB_PASSWORD`
-- `APP_URL` (public base URL of the web service, used to set `site_url`)
+- `SUITECRM_SITE_URL` (public HTTPS base URL of the web service, used to set `site_url`)
 
 Database must be MySQL or MariaDB. Postgres is not supported for SuiteCRM.
 
@@ -97,12 +97,12 @@ Note on config persistence:
 2. Follow the SuiteCRM installer.
 3. Choose **MySQL** as the database type.
 4. Use the same `DB_*` values configured in Railway.
-5. Set the **Site URL** to `APP_URL`.
+5. Set the **Site URL** to `SUITECRM_SITE_URL`.
 
 ## Reverse Proxy and HTTPS
 
-- Apache sets `HTTPS=on` when `X-Forwarded-Proto: https` is present.
-- Ensure `APP_URL` is the public HTTPS URL to avoid redirect loops.
+- Apache sets `HTTPS=on` and `SERVER_PORT=443` when `X-Forwarded-Proto: https` is present.
+- Ensure `SUITECRM_SITE_URL` is the public HTTPS URL to avoid redirect loops.
 
 ## Acceptance Checklist
 
@@ -142,7 +142,7 @@ Installer disable log (after successful install):
 
 Redirect loops:
 
-- Ensure `APP_URL` matches the public domain scheme (https).
+- Ensure `SUITECRM_SITE_URL` matches the public domain scheme (https).
 - Check that the proxy header is set in logs and `site_url` is correct.
 
 404s or missing assets:
