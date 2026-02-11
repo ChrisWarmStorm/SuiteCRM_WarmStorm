@@ -155,6 +155,23 @@ case "${PERSIST_CONFIG_DIR}" in
     ;;
 esac
 
+is_installed() {
+  if [ -s "${APP_ROOT}/config.php" ]; then
+    return 0
+  fi
+  if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
+    return 0
+  fi
+  return 1
+}
+
+db_has_suitecrm_tables() {
+  if [ "${db_tables_exist}" = "1" ] && [ "${db_core_table_count}" -gt 0 ]; then
+    return 0
+  fi
+  return 1
+}
+
 mkdir -p "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 mkdir -p "${PERSIST_CONFIG_DIR}"
 
@@ -473,7 +490,8 @@ $db = getenv('SUITECRM_DB_NAME') ?: '';
 $user = getenv('SUITECRM_DB_USER') ?: '';
 $pass = getenv('SUITECRM_DB_PASSWORD') ?: '';
 $fingerprintTable = getenv('SUITECRM_DB_FINGERPRINT_TABLE') ?: 'users';
-$coreTables = ['users', 'accounts', 'email_addresses', 'config'];
+$coreTables = ['users', 'config'];
+$coreTableExpected = count($coreTables);
 
 $tableCount = 0;
 $coreMatchCount = 0;
@@ -515,7 +533,7 @@ try {
     if ($res && ($row = $res->fetch_assoc())) {
         $coreMatchCount = (int)$row['c'];
     }
-    $tablesExist = $coreMatchCount > 0 ? 1 : 0;
+    $tablesExist = $coreMatchCount >= $coreTableExpected ? 1 : 0;
 
     $res = $mysqli->query("SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema='{$dbEsc}'");
     if ($res === false) {
@@ -671,9 +689,33 @@ then
 fi
 
 if [ "${db_tables_exist}" != "1" ] && [ "${db_allow_schema_init}" != "1" ]; then
-  echo "[entrypoint] Refusing to run installer because DB is empty and DB_ALLOW_SCHEMA_INIT=0"
-  exit 1
+  echo "[entrypoint] DB empty; installer will be available (DB_ALLOW_SCHEMA_INIT=0)"
 fi
+
+config_present=0
+config_path=""
+if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  config_present=1
+  config_path="${PERSIST_CONFIG_DIR}/config.php"
+elif [ -s "${APP_ROOT}/config.php" ]; then
+  config_present=1
+  config_path="${APP_ROOT}/config.php"
+fi
+if [ -n "${config_path}" ]; then
+  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=${config_path}"
+else
+  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=none"
+fi
+
+install_state=""
+if is_installed; then
+  install_state="installed"
+elif db_has_suitecrm_tables; then
+  install_state="needs_config"
+else
+  install_state="fresh_db"
+fi
+echo "[entrypoint] INSTALL_STATE=${install_state}"
 
 db_host_escaped="$(php_escape "${db_host}")"
 db_port_escaped="$(php_escape "${db_port}")"
@@ -724,33 +766,15 @@ site_url_for_config="${PUBLIC_URL:-${SUITECRM_SITE_URL:-${APP_URL:-}}}"
 if [ -n "${site_url_for_config}" ]; then
   site_url_for_config="$(printf '%s' "${site_url_for_config}" | sed -E 's:/*$::')"
 fi
-config_fingerprint_input="db_host:${db_host}|db_port:${db_port}|db_name:${db_name}|db_user:${db_user}|db_type:${db_config_type}|db_manager:${db_manager}|site_url:${site_url_for_config}|unique_key:${db_unique_key}"
-config_fingerprint="$(hash_value "${config_fingerprint_input}")"
-config_fingerprint_file="${PERSIST_CONFIG_DIR}/last_config_fingerprint.txt"
-prev_config_fingerprint=""
-if [ -f "${config_fingerprint_file}" ]; then
-  while IFS='=' read -r key value; do
-    case "${key}" in
-      CONFIG_FINGERPRINT) prev_config_fingerprint="${value}" ;;
-    esac
-  done < "${config_fingerprint_file}"
-fi
 
-config_force_regen="${FORCE_CONFIG_REGEN:-0}"
 config_should_regen=0
-if [ "${config_force_regen}" = "1" ]; then
-  config_should_regen=1
-  config_regen_reason="force"
-elif [ ! -s "${config_target_path}" ]; then
+if [ "${config_present}" -ne 1 ]; then
   config_should_regen=1
   config_regen_reason="missing"
-elif [ -n "${prev_config_fingerprint}" ] && [ "${prev_config_fingerprint}" != "${config_fingerprint}" ]; then
-  config_should_regen=1
-  config_regen_reason="fingerprint_changed"
 fi
 
-if [ "${db_tables_exist}" = "1" ]; then
-  if [ "${config_should_regen}" -eq 1 ]; then
+if [ "${install_state}" = "needs_config" ] && [ "${config_should_regen}" -eq 1 ]; then
+  if db_has_suitecrm_tables; then
     config_regenerated=1
     config_tmp="$(mktemp)"
     config_gen_error="$(mktemp)"
@@ -770,7 +794,6 @@ if [ "${db_tables_exist}" = "1" ]; then
         SUITECRM_DB_PASSWORD="${db_password}" \
         SUITECRM_SITE_URL="${site_url_for_config}" \
         SUITECRM_UNIQUE_KEY="${db_unique_key}" \
-        SUITECRM_ROOT="${APP_ROOT}" \
         SUITECRM_CONFIG_TARGET="${config_tmp}" \
         php "${config_gen_script}" 2>"${config_gen_error}"
     config_gen_status=$?
@@ -786,20 +809,15 @@ if [ "${db_tables_exist}" = "1" ]; then
     chown www-data:www-data "${config_target_path}" || true
     chmod 664 "${config_target_path}" || true
   fi
-else
-  if [ "${config_should_regen}" -eq 1 ]; then
-    echo "[entrypoint] Config regen requested but DB tables not present; skipping"
-  fi
+elif [ "${install_state}" = "fresh_db" ] && [ "${config_should_regen}" -eq 1 ]; then
+  echo "[entrypoint] CONFIG_SKIPPED=1 reason=fresh_db_requires_installer"
 fi
 
-if ! cat > "${config_fingerprint_file}" <<EOF
-CONFIG_FINGERPRINT=${config_fingerprint}
-DB_FINGERPRINT=${db_fingerprint}
-DB_NAME=${db_name}
-SITE_URL=${site_url_for_config}
-EOF
-then
-  echo "[entrypoint] Warning: failed to write ${config_fingerprint_file}"
+if [ "${config_regenerated}" -eq 1 ]; then
+  echo "[entrypoint] CONFIG_REGENERATED=1 reason=${config_regen_reason}"
+  config_present=1
+  config_path="${config_target_path}"
+  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=${config_path}"
 fi
 
 if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -811,10 +829,6 @@ if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
     echo "[entrypoint] zero-byte persisted config.php detected; removing"
     rm -f "${PERSIST_CONFIG_DIR}/config.php"
   fi
-fi
-
-if [ "${config_regenerated}" -eq 1 ]; then
-  echo "[entrypoint] CONFIG_REGENERATED=1 reason=${config_regen_reason}"
 fi
 
 if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -922,13 +936,8 @@ if [ "${db_tables_exist}" = "1" ]; then
   installer_disabled=1
   installer_disable_reason="db_tables_exist"
 else
-  if [ "${db_allow_schema_init}" = "1" ]; then
-    installer_disabled=0
-    installer_disable_reason="db_empty_allow_init"
-  else
-    installer_disabled=1
-    installer_disable_reason="db_empty_disallowed"
-  fi
+  installer_disabled=0
+  installer_disable_reason="db_empty"
 fi
 
 if [ "${installer_disabled}" -eq 1 ]; then
