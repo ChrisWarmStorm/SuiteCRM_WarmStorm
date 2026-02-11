@@ -13,7 +13,9 @@ This repo is hardened so redeploys never wipe data and the installer never re-ru
 
 ## Required Environment Variables
 
-Set these in the web service (and the worker service if you run one):
+Set these in the web service (and the worker service if you run one). You can either:
+- Set `DB_*` explicitly, or
+- Rely on Railway's injected `MYSQL*` variables (auto-mapped by the entrypoint).
 
 - `PUBLIC_URL` = `https://<public-domain>` (no trailing slash, no `:8080`)
 - `DB_HOST`
@@ -29,13 +31,28 @@ Optional:
 
 - `DATABASE_URL` = `mysql://user:pass@host:port/dbname` (used only if DB_* values are unset)
 
-Railway MySQL mappings:
+Railway MySQL mappings (auto-detected; no need to manually set DB_* if you use these):
 
 - `DB_HOST` = `${{MYSQLHOST}}`
 - `DB_PORT` = `${{MYSQLPORT}}`
 - `DB_NAME` = `${{MYSQLDATABASE}}`
 - `DB_USER` = `${{MYSQLUSER}}`
 - `DB_PASSWORD` = `${{MYSQLPASSWORD}}`
+
+Priority order:
+- Explicit `DB_*`
+- `DATABASE_URL` (mysql/mariadb)
+- Railway `MYSQL*` fallback
+
+Example (Railway MySQL injection only):
+
+```bash
+PUBLIC_URL=https://your-app.up.railway.app
+DB_REQUIRE_PERSISTENT=1
+DB_ALLOW_SCHEMA_INIT=1   # first install only; switch to 0 after installer completes
+DB_FINGERPRINT_TABLE=users
+# Do not set DB_*; Railway provides MYSQLHOST/MYSQLUSER/MYSQLPASSWORD/MYSQLDATABASE/MYSQLPORT
+```
 
 ## First Install vs Normal Redeploy
 
@@ -65,6 +82,8 @@ Good boot logs include:
 - `[entrypoint] proxy_https_support=1`
 - `[entrypoint] DB_HOST=<host>`
 - `[entrypoint] DB_NAME=<name>`
+- `[entrypoint] DB_TARGET=mysql host=<masked> port=<port> db=<name> user=<masked> source=<DB_VARS|DATABASE_URL|RAILWAY_MYSQL_VARS>`
+- `[entrypoint] DB_SERVER=version:<version> host:<masked>`
 - `[entrypoint] DB_REQUIRE_PERSISTENT=1`
 - `[entrypoint] DB_ALLOW_SCHEMA_INIT=0`
 - `[entrypoint] DB_TABLES_EXIST=0|1`
@@ -81,7 +100,7 @@ If `PUBLIC_URL` is set:
 
 ## Smoke Check
 
-Run inside a container:
+Run inside a container (this invokes the entrypoint with `SMOKE_CHECK=1`):
 
 ```bash
 bash docker/smoke-test.sh
@@ -91,4 +110,10 @@ To assert a pre-initialized DB:
 
 ```bash
 EXPECT_DB_TABLES_EXIST=1 bash docker/smoke-test.sh
+```
+
+If the entrypoint is not at `./docker-entrypoint.sh`, set:
+
+```bash
+ENTRYPOINT_PATH=/path/to/docker-entrypoint.sh bash docker/smoke-test.sh
 ```

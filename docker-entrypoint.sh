@@ -36,6 +36,13 @@ if [ "${APP_ROOT_DEFAULTED}" -eq 1 ]; then
   fi
 fi
 
+if [ ! -f "${APP_ROOT}/include/entryPoint.php" ]; then
+  echo "[entrypoint] FATAL: SuiteCRM bootstrap missing: ${APP_ROOT}/include/entryPoint.php"
+  ls -la "${APP_ROOT}" || true
+  exit 1
+fi
+echo "[entrypoint] SuiteCRM bootstrap OK: include/entryPoint.php present"
+
 get_env_value() {
   local value=""
   for key in "$@"; do
@@ -135,6 +142,18 @@ fi
 
 PERSIST_CONFIG_DIR="${PERSIST_CONFIG_DIR:-${APP_ROOT}/custom}"
 CONFIG_TEMPLATE_PATH="${APP_ROOT}/config_override.php.dist"
+
+case "${PERSIST_CONFIG_DIR}" in
+  "${APP_ROOT}/custom"|"${APP_ROOT}/custom/"*|\
+  "${APP_ROOT}/upload"|"${APP_ROOT}/upload/"*|\
+  "${APP_ROOT}/data"|"${APP_ROOT}/data/"*|\
+  "${APP_ROOT}/cache"|"${APP_ROOT}/cache/"*)
+    ;;
+  *)
+    echo "[entrypoint] Warning: PERSIST_CONFIG_DIR not in safe writable paths; resetting to ${APP_ROOT}/custom"
+    PERSIST_CONFIG_DIR="${APP_ROOT}/custom"
+    ;;
+esac
 
 mkdir -p "${APP_ROOT}/cache" "${APP_ROOT}/custom" "${APP_ROOT}/data" "${APP_ROOT}/upload"
 mkdir -p "${PERSIST_CONFIG_DIR}"
@@ -252,7 +271,7 @@ EOF
   echo "[entrypoint] proxy_https_support=1"
 fi
 
-db_source=""
+db_source="DB_VARS"
 db_config_type="mysqli"
 db_manager="MysqliManager"
 db_host="${DB_HOST:-}"
@@ -275,7 +294,12 @@ db_url_name=""
 db_url_user=""
 db_url_pass=""
 
-if [ -n "${DATABASE_URL:-}" ]; then
+db_need_url=0
+if [ -z "${db_host}" ] || [ -z "${db_name}" ] || [ -z "${db_user}" ] || [ -z "${db_password}" ] || [ -z "${db_port}" ]; then
+  db_need_url=1
+fi
+
+if [ -n "${DATABASE_URL:-}" ] && [ "${db_need_url}" -eq 1 ]; then
   db_url_output=""
   db_url_error="$(mktemp)"
   set +e
@@ -312,23 +336,23 @@ if [ -n "${DATABASE_URL:-}" ]; then
   db_url_status=$?
   set -e
   if [ "${db_url_status}" -ne 0 ]; then
-    echo "[entrypoint] FATAL: failed to parse DATABASE_URL"
+    echo "[entrypoint] Warning: failed to parse DATABASE_URL; falling back to other DB env vars"
     cat "${db_url_error}" || true
     rm -f "${db_url_error}"
-    exit 1
-  fi
-  rm -f "${db_url_error}"
+  else
+    rm -f "${db_url_error}"
 
-  while IFS='=' read -r key value; do
-    case "${key}" in
-      DB_URL_SCHEME) db_url_scheme="${value}" ;;
-      DB_URL_HOST) db_url_host="${value}" ;;
-      DB_URL_PORT) db_url_port="${value}" ;;
-      DB_URL_NAME) db_url_name="${value}" ;;
-      DB_URL_USER) db_url_user="${value}" ;;
-      DB_URL_PASS) db_url_pass="${value}" ;;
-    esac
-  done <<< "${db_url_output}"
+    while IFS='=' read -r key value; do
+      case "${key}" in
+        DB_URL_SCHEME) db_url_scheme="${value}" ;;
+        DB_URL_HOST) db_url_host="${value}" ;;
+        DB_URL_PORT) db_url_port="${value}" ;;
+        DB_URL_NAME) db_url_name="${value}" ;;
+        DB_URL_USER) db_url_user="${value}" ;;
+        DB_URL_PASS) db_url_pass="${value}" ;;
+      esac
+    done <<< "${db_url_output}"
+  fi
 fi
 
 db_url_supported=1
@@ -344,35 +368,74 @@ if [ -n "${db_url_scheme}" ]; then
 fi
 
 if [ "${db_url_supported}" -ne 1 ]; then
-  if [ -z "${db_host}" ] || [ -z "${db_name}" ] || [ -z "${db_user}" ] || [ -z "${db_password}" ]; then
-    echo "[entrypoint] FATAL: unsupported DATABASE_URL scheme (only mysql/mariadb are supported)"
-    exit 1
-  fi
+  echo "[entrypoint] Warning: unsupported DATABASE_URL scheme; ignoring DATABASE_URL"
 fi
 
+db_url_used=0
 if [ "${db_url_supported}" -eq 1 ] && [ -z "${db_host}" ] && [ -n "${db_url_host}" ]; then
   db_host="${db_url_host}"
-  db_source="DATABASE_URL"
+  db_url_used=1
 fi
 if [ "${db_url_supported}" -eq 1 ] && [ -z "${db_port}" ] && [ -n "${db_url_port}" ]; then
   db_port="${db_url_port}"
-  db_source="DATABASE_URL"
+  db_url_used=1
 fi
 if [ "${db_url_supported}" -eq 1 ] && [ -z "${db_name}" ] && [ -n "${db_url_name}" ]; then
   db_name="${db_url_name}"
-  db_source="DATABASE_URL"
+  db_url_used=1
 fi
 if [ "${db_url_supported}" -eq 1 ] && [ -z "${db_user}" ] && [ -n "${db_url_user}" ]; then
   db_user="${db_url_user}"
-  db_source="DATABASE_URL"
+  db_url_used=1
 fi
 if [ "${db_url_supported}" -eq 1 ] && [ -z "${db_password}" ] && [ -n "${db_url_pass}" ]; then
   db_password="${db_url_pass}"
+  db_url_used=1
+fi
+
+if [ "${db_url_used}" -eq 1 ]; then
   db_source="DATABASE_URL"
 fi
 
-if [ -z "${db_source}" ]; then
-  db_source="DB_VARS"
+railway_fallback_used=0
+if [ -z "${db_host}" ]; then
+  db_host_candidate="$(get_env_value MYSQLHOST MARIADB_HOST MYSQL_HOST)"
+  if [ -n "${db_host_candidate}" ]; then
+    db_host="${db_host_candidate}"
+    railway_fallback_used=1
+  fi
+fi
+if [ -z "${db_port}" ]; then
+  db_port_candidate="$(get_env_value MYSQLPORT MARIADB_PORT MYSQL_PORT)"
+  if [ -n "${db_port_candidate}" ]; then
+    db_port="${db_port_candidate}"
+    railway_fallback_used=1
+  fi
+fi
+if [ -z "${db_name}" ]; then
+  db_name_candidate="$(get_env_value MYSQLDATABASE MARIADB_DATABASE MYSQL_DATABASE)"
+  if [ -n "${db_name_candidate}" ]; then
+    db_name="${db_name_candidate}"
+    railway_fallback_used=1
+  fi
+fi
+if [ -z "${db_user}" ]; then
+  db_user_candidate="$(get_env_value MYSQLUSER MARIADB_USER MYSQL_USER)"
+  if [ -n "${db_user_candidate}" ]; then
+    db_user="${db_user_candidate}"
+    railway_fallback_used=1
+  fi
+fi
+if [ -z "${db_password}" ]; then
+  db_password_candidate="$(get_env_value MYSQLPASSWORD MARIADB_PASSWORD MYSQL_PASSWORD)"
+  if [ -n "${db_password_candidate}" ]; then
+    db_password="${db_password_candidate}"
+    railway_fallback_used=1
+  fi
+fi
+
+if [ "${railway_fallback_used}" -eq 1 ]; then
+  db_source="RAILWAY_MYSQL_VARS"
 fi
 
 if [ -z "${db_port}" ]; then
@@ -417,6 +480,8 @@ $coreMatchCount = 0;
 $tablesExist = 0;
 $usersCount = 0;
 $serverVersion = '';
+$serverHost = '';
+$serverUuid = '';
 $uniqueKey = '';
 
 $clean = static function ($value) {
@@ -442,18 +507,33 @@ try {
     $inList = "'" . implode("','", $coreTables) . "'";
 
     $res = $mysqli->query("SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema='{$dbEsc}' AND table_name IN ({$inList})");
+    if ($res === false) {
+        fwrite(STDERR, "schema_inspect_denied=".$mysqli->error."
+");
+        exit(6);
+    }
     if ($res && ($row = $res->fetch_assoc())) {
         $coreMatchCount = (int)$row['c'];
     }
     $tablesExist = $coreMatchCount > 0 ? 1 : 0;
 
     $res = $mysqli->query("SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema='{$dbEsc}'");
+    if ($res === false) {
+        fwrite(STDERR, "schema_inspect_denied=".$mysqli->error."
+");
+        exit(6);
+    }
     if ($res && ($row = $res->fetch_assoc())) {
         $tableCount = (int)$row['c'];
     }
 
     $tableEsc = $mysqli->real_escape_string($fingerprintTable);
     $res = $mysqli->query("SELECT COUNT(*) AS c FROM information_schema.tables WHERE table_schema='{$dbEsc}' AND table_name='{$tableEsc}'");
+    if ($res === false) {
+        fwrite(STDERR, "schema_inspect_denied=".$mysqli->error."
+");
+        exit(6);
+    }
     if ($res && ($row = $res->fetch_assoc()) && (int)$row['c'] > 0) {
         $resUsers = $mysqli->query("SELECT COUNT(*) AS c FROM `{$fingerprintTable}`");
         if ($resUsers && ($rowUsers = $resUsers->fetch_assoc())) {
@@ -462,6 +542,14 @@ try {
     }
 
     $serverVersion = $clean($mysqli->server_info ?? '');
+    $res = $mysqli->query("SELECT @@hostname AS host");
+    if ($res && ($row = $res->fetch_assoc())) {
+        $serverHost = $clean($row['host'] ?? '');
+    }
+    $res = $mysqli->query("SELECT @@server_uuid AS uuid");
+    if ($res && ($row = $res->fetch_assoc())) {
+        $serverUuid = $clean($row['uuid'] ?? '');
+    }
 
     if ($tablesExist === 1) {
         $res = $mysqli->query("SELECT value FROM config WHERE category='system' AND name='unique_key' LIMIT 1");
@@ -485,6 +573,12 @@ echo "DB_USERS_COUNT={$usersCount}
 ";
 echo "DB_SERVER_VERSION={$serverVersion}
 ";
+echo "DB_SERVER_HOST={$serverHost}
+";
+if ($serverUuid !== '') {
+    echo "DB_SERVER_UUID={$serverUuid}
+";
+}
 if ($uniqueKey !== '') {
     echo "DB_UNIQUE_KEY={$uniqueKey}
 ";
@@ -498,7 +592,11 @@ db_check_status=$?
 set -e
 rm -f "${db_check_script}"
 if [ "${db_check_status}" -ne 0 ]; then
-  echo "[entrypoint] FATAL: database connectivity/schema check failed"
+  if grep -q "schema_inspect_denied" "${db_check_error}"; then
+    echo "[entrypoint] FATAL: DB connected but insufficient privileges to inspect schema/tables (check DB_USER grants)"
+  else
+    echo "[entrypoint] FATAL: database connectivity/schema check failed"
+  fi
   cat "${db_check_error}" || true
   rm -f "${db_check_error}"
   exit 1
@@ -509,12 +607,16 @@ db_tables_exist="0"
 db_core_table_count="0"
 db_users_count="0"
 db_server_version=""
+db_server_host=""
+db_server_uuid=""
 while IFS='=' read -r key value; do
   case "${key}" in
     DB_TABLES_EXIST) db_tables_exist="${value}" ;;
     DB_CORE_TABLE_COUNT) db_core_table_count="${value}" ;;
     DB_USERS_COUNT) db_users_count="${value}" ;;
     DB_SERVER_VERSION) db_server_version="${value}" ;;
+    DB_SERVER_HOST) db_server_host="${value}" ;;
+    DB_SERVER_UUID) db_server_uuid="${value}" ;;
     DB_UNIQUE_KEY) db_unique_key="${value}" ;;
   esac
 done <<< "${db_check_output}"
@@ -527,6 +629,15 @@ echo "[entrypoint] DB_TABLES_EXIST=${db_tables_exist}"
 echo "[entrypoint] DB_CORE_TABLE_COUNT=${db_core_table_count}"
 echo "[entrypoint] DB_USERS_COUNT=${db_users_count}"
 echo "[entrypoint] DB_SCHEMA_MUTATION=0"
+db_server_identity=""
+if [ -n "${db_server_host}" ]; then
+  db_server_identity="host:$(mask_value "${db_server_host}")"
+elif [ -n "${db_server_uuid}" ]; then
+  db_server_identity="uuid:${db_server_uuid}"
+else
+  db_server_identity="host:$(mask_value "${db_host}")"
+fi
+echo "[entrypoint] DB_SERVER=version:${db_server_version} ${db_server_identity}"
 
 fingerprint_input="mysql:${db_server_version}|db:${db_name}|tables:${db_core_table_count}|users:${db_users_count}"
 db_fingerprint="$(hash_value "${fingerprint_input}")"
@@ -613,13 +724,42 @@ site_url_for_config="${PUBLIC_URL:-${SUITECRM_SITE_URL:-${APP_URL:-}}}"
 if [ -n "${site_url_for_config}" ]; then
   site_url_for_config="$(printf '%s' "${site_url_for_config}" | sed -E 's:/*$::')"
 fi
+config_fingerprint_input="db_host:${db_host}|db_port:${db_port}|db_name:${db_name}|db_user:${db_user}|db_type:${db_config_type}|db_manager:${db_manager}|site_url:${site_url_for_config}|unique_key:${db_unique_key}"
+config_fingerprint="$(hash_value "${config_fingerprint_input}")"
+config_fingerprint_file="${PERSIST_CONFIG_DIR}/last_config_fingerprint.txt"
+prev_config_fingerprint=""
+if [ -f "${config_fingerprint_file}" ]; then
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      CONFIG_FINGERPRINT) prev_config_fingerprint="${value}" ;;
+    esac
+  done < "${config_fingerprint_file}"
+fi
+
+config_force_regen="${FORCE_CONFIG_REGEN:-0}"
+config_should_regen=0
+if [ "${config_force_regen}" = "1" ]; then
+  config_should_regen=1
+  config_regen_reason="force"
+elif [ ! -s "${config_target_path}" ]; then
+  config_should_regen=1
+  config_regen_reason="missing"
+elif [ -n "${prev_config_fingerprint}" ] && [ "${prev_config_fingerprint}" != "${config_fingerprint}" ]; then
+  config_should_regen=1
+  config_regen_reason="fingerprint_changed"
+fi
 
 if [ "${db_tables_exist}" = "1" ]; then
-  if [ ! -s "${config_target_path}" ]; then
+  if [ "${config_should_regen}" -eq 1 ]; then
     config_regenerated=1
-    config_regen_reason="db_tables_exist"
     config_tmp="$(mktemp)"
     config_gen_error="$(mktemp)"
+    config_gen_script="${APP_ROOT}/docker/scripts/generate_config.php"
+    if [ ! -f "${config_gen_script}" ]; then
+      echo "[entrypoint] FATAL: missing config generator script: ${config_gen_script}"
+      rm -f "${config_tmp}" "${config_gen_error}"
+      exit 1
+    fi
     set +e
     env SUITECRM_DB_TYPE="${db_config_type}" \
         SUITECRM_DB_MANAGER="${db_manager}" \
@@ -630,60 +770,9 @@ if [ "${db_tables_exist}" = "1" ]; then
         SUITECRM_DB_PASSWORD="${db_password}" \
         SUITECRM_SITE_URL="${site_url_for_config}" \
         SUITECRM_UNIQUE_KEY="${db_unique_key}" \
+        SUITECRM_ROOT="${APP_ROOT}" \
         SUITECRM_CONFIG_TARGET="${config_tmp}" \
-        php <<'PHP' 2>"${config_gen_error}"
-<?php
-define('sugarEntry', true);
-require_once 'include/utils.php';
-
-$config = get_sugar_config_defaults();
-$config['dbconfig'] = $config['dbconfig'] ?? [];
-$config['dbconfigoption'] = $config['dbconfigoption'] ?? [];
-
-$config['dbconfig']['db_host_name'] = getenv('SUITECRM_DB_HOST');
-$config['dbconfig']['db_port'] = getenv('SUITECRM_DB_PORT');
-$config['dbconfig']['db_name'] = getenv('SUITECRM_DB_NAME');
-$config['dbconfig']['db_user_name'] = getenv('SUITECRM_DB_USER');
-$config['dbconfig']['db_password'] = getenv('SUITECRM_DB_PASSWORD');
-$config['dbconfig']['db_type'] = getenv('SUITECRM_DB_TYPE');
-
-$dbManager = getenv('SUITECRM_DB_MANAGER');
-if ($dbManager !== false && $dbManager !== '') {
-    $config['dbconfig']['db_manager'] = $dbManager;
-}
-
-$siteUrl = getenv('SUITECRM_SITE_URL');
-if ($siteUrl !== false && $siteUrl !== '') {
-    $config['site_url'] = rtrim($siteUrl, '/');
-}
-
-$uniqueKey = getenv('SUITECRM_UNIQUE_KEY');
-if ($uniqueKey !== false && $uniqueKey !== '') {
-    $config['unique_key'] = $uniqueKey;
-}
-
-$config['installer_locked'] = true;
-$config['cache_dir'] = $config['cache_dir'] ?? 'cache/';
-$config['upload_dir'] = $config['upload_dir'] ?? 'upload/';
-$config['tmp_dir'] = $config['tmp_dir'] ?? 'cache/tmp/';
-$config['session_dir'] = $config['session_dir'] ?? 'cache/sessions/';
-$config['log_dir'] = $config['log_dir'] ?? 'log/';
-$config['log_file'] = $config['log_file'] ?? 'suitecrm.log';
-
-$target = getenv('SUITECRM_CONFIG_TARGET');
-if ($target === false || $target === '') {
-    fwrite(STDERR, "missing config target\n");
-    exit(2);
-}
-
-$contents = "<?php\n" .
-    '// created: ' . gmdate('Y-m-d H:i:s') . "\n" .
-    '$sugar_config = ' . var_export($config, true) . ";\n";
-if (file_put_contents($target, $contents) === false) {
-    fwrite(STDERR, "failed to write config\n");
-    exit(3);
-}
-PHP
+        php "${config_gen_script}" 2>"${config_gen_error}"
     config_gen_status=$?
     set -e
     if [ "${config_gen_status}" -ne 0 ]; then
@@ -697,6 +786,20 @@ PHP
     chown www-data:www-data "${config_target_path}" || true
     chmod 664 "${config_target_path}" || true
   fi
+else
+  if [ "${config_should_regen}" -eq 1 ]; then
+    echo "[entrypoint] Config regen requested but DB tables not present; skipping"
+  fi
+fi
+
+if ! cat > "${config_fingerprint_file}" <<EOF
+CONFIG_FINGERPRINT=${config_fingerprint}
+DB_FINGERPRINT=${db_fingerprint}
+DB_NAME=${db_name}
+SITE_URL=${site_url_for_config}
+EOF
+then
+  echo "[entrypoint] Warning: failed to write ${config_fingerprint_file}"
 fi
 
 if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -712,6 +815,12 @@ fi
 
 if [ "${config_regenerated}" -eq 1 ]; then
   echo "[entrypoint] CONFIG_REGENERATED=1 reason=${config_regen_reason}"
+fi
+
+if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  echo "[entrypoint] config.php present: yes"
+else
+  echo "[entrypoint] config.php present: no"
 fi
 
 if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then

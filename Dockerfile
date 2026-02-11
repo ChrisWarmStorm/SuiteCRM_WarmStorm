@@ -34,6 +34,7 @@ RUN apt-get update \
 
 COPY --from=composer:2.7 /usr/bin/composer /usr/local/bin/composer
 COPY . /var/www/html
+RUN test -f /var/www/html/include/entryPoint.php || (echo "SuiteCRM root missing include/entryPoint.php"; ls -la /var/www/html; exit 1)
 
 RUN mkdir -p /usr/local/etc/php/conf.d /etc/php/8.2/apache2/conf.d
 COPY docker/php/99-suitecrm.ini /usr/local/etc/php/conf.d/99-suitecrm.ini
