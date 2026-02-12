@@ -15,6 +15,17 @@ $env = static function (string $key, string $fallback = ''): string {
     return $value;
 };
 
+$dbTablesExist = $env('SUITECRM_DB_TABLES_EXIST');
+$configPresent = $env('SUITECRM_CONFIG_PRESENT');
+$allowEntryPoint = ($dbTablesExist === '1') || ($configPresent === '1');
+$includeEntryPoint = $allowEntryPoint && ($env('SUITECRM_INCLUDE_ENTRYPOINT') === '1');
+if ($includeEntryPoint) {
+    $entryPoint = dirname(__DIR__, 2) . '/include/entryPoint.php';
+    if (is_file($entryPoint)) {
+        require_once $entryPoint;
+    }
+}
+
 $dbHost = $env('SUITECRM_DB_HOST', $env('DB_HOST'));
 $dbPort = $env('SUITECRM_DB_PORT', $env('DB_PORT', '3306'));
 $dbName = $env('SUITECRM_DB_NAME', $env('DB_NAME'));

@@ -671,6 +671,11 @@ if [ -f "${db_fingerprint_file}" ]; then
   done < "${db_fingerprint_file}"
 fi
 
+db_fingerprint_changed=0
+if [ -n "${prev_db_fingerprint}" ] && [ "${prev_db_fingerprint}" != "${db_fingerprint}" ]; then
+  db_fingerprint_changed=1
+fi
+
 if [ -n "${prev_db_fingerprint}" ] && [ "${db_tables_exist}" != "1" ] && [ "${db_allow_schema_init}" != "1" ]; then
   echo "[entrypoint] FATAL: DB appears empty but previously had tables. This indicates non-persistent DB or wrong DB_* vars."
   exit 1
@@ -691,31 +696,6 @@ fi
 if [ "${db_tables_exist}" != "1" ] && [ "${db_allow_schema_init}" != "1" ]; then
   echo "[entrypoint] DB empty; installer will be available (DB_ALLOW_SCHEMA_INIT=0)"
 fi
-
-config_present=0
-config_path=""
-if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
-  config_present=1
-  config_path="${PERSIST_CONFIG_DIR}/config.php"
-elif [ -s "${APP_ROOT}/config.php" ]; then
-  config_present=1
-  config_path="${APP_ROOT}/config.php"
-fi
-if [ -n "${config_path}" ]; then
-  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=${config_path}"
-else
-  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=none"
-fi
-
-install_state=""
-if is_installed; then
-  install_state="installed"
-elif db_has_suitecrm_tables; then
-  install_state="needs_config"
-else
-  install_state="fresh_db"
-fi
-echo "[entrypoint] INSTALL_STATE=${install_state}"
 
 db_host_escaped="$(php_escape "${db_host}")"
 db_port_escaped="$(php_escape "${db_port}")"
@@ -762,18 +742,25 @@ echo "[entrypoint] db override applied: 1"
 config_regenerated=0
 config_regen_reason=""
 config_target_path="${PERSIST_CONFIG_DIR}/config.php"
+config_target_present=0
+if [ -f "${config_target_path}" ]; then
+  config_target_present=1
+fi
 site_url_for_config="${PUBLIC_URL:-${SUITECRM_SITE_URL:-${APP_URL:-}}}"
 if [ -n "${site_url_for_config}" ]; then
   site_url_for_config="$(printf '%s' "${site_url_for_config}" | sed -E 's:/*$::')"
 fi
 
 config_should_regen=0
-if [ "${config_present}" -ne 1 ]; then
+if [ ! -s "${config_target_path}" ]; then
   config_should_regen=1
   config_regen_reason="missing"
+elif [ "${db_fingerprint_changed}" -eq 1 ]; then
+  config_should_regen=1
+  config_regen_reason="db_fingerprint_changed"
 fi
 
-if [ "${install_state}" = "needs_config" ] && [ "${config_should_regen}" -eq 1 ]; then
+if [ "${config_should_regen}" -eq 1 ]; then
   if db_has_suitecrm_tables; then
     config_regenerated=1
     config_tmp="$(mktemp)"
@@ -794,6 +781,8 @@ if [ "${install_state}" = "needs_config" ] && [ "${config_should_regen}" -eq 1 ]
         SUITECRM_DB_PASSWORD="${db_password}" \
         SUITECRM_SITE_URL="${site_url_for_config}" \
         SUITECRM_UNIQUE_KEY="${db_unique_key}" \
+        SUITECRM_DB_TABLES_EXIST="${db_tables_exist}" \
+        SUITECRM_CONFIG_PRESENT="${config_target_present}" \
         SUITECRM_CONFIG_TARGET="${config_tmp}" \
         php "${config_gen_script}" 2>"${config_gen_error}"
     config_gen_status=$?
@@ -808,16 +797,13 @@ if [ "${install_state}" = "needs_config" ] && [ "${config_should_regen}" -eq 1 ]
     mv "${config_tmp}" "${config_target_path}"
     chown www-data:www-data "${config_target_path}" || true
     chmod 664 "${config_target_path}" || true
+  else
+    echo "[entrypoint] CONFIG_SKIPPED=1 reason=needs_install"
   fi
-elif [ "${install_state}" = "fresh_db" ] && [ "${config_should_regen}" -eq 1 ]; then
-  echo "[entrypoint] CONFIG_SKIPPED=1 reason=fresh_db_requires_installer"
 fi
 
 if [ "${config_regenerated}" -eq 1 ]; then
-  echo "[entrypoint] CONFIG_REGENERATED=1 reason=${config_regen_reason}"
-  config_present=1
-  config_path="${config_target_path}"
-  echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=${config_path}"
+  echo "[entrypoint] CONFIG_REGENERATED=1 reason=${config_regen_reason} target=${config_target_path}"
 fi
 
 if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -829,12 +815,6 @@ if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
     echo "[entrypoint] zero-byte persisted config.php detected; removing"
     rm -f "${PERSIST_CONFIG_DIR}/config.php"
   fi
-fi
-
-if [ -s "${PERSIST_CONFIG_DIR}/config.php" ]; then
-  echo "[entrypoint] config.php present: yes"
-else
-  echo "[entrypoint] config.php present: no"
 fi
 
 if [ -f "${PERSIST_CONFIG_DIR}/config.php" ]; then
@@ -877,6 +857,43 @@ chmod -R u+rwX,g+rwX "${APP_ROOT}/custom"
 config_target="${PERSIST_CONFIG_DIR}/config.php"
 override_target="${PERSIST_CONFIG_DIR}/config_override.php"
 
+config_root_present=0
+config_root_readable=0
+config_root_realpath="none"
+if [ -f "${APP_ROOT}/config.php" ]; then
+  config_root_present=1
+  if [ -r "${APP_ROOT}/config.php" ]; then
+    config_root_readable=1
+  fi
+  config_root_realpath="$(readlink -f "${APP_ROOT}/config.php" 2>/dev/null || true)"
+  if [ -z "${config_root_realpath}" ]; then
+    config_root_realpath="${APP_ROOT}/config.php"
+  fi
+fi
+
+config_persist_present=0
+config_persist_readable=0
+if [ -f "${config_target}" ]; then
+  config_persist_present=1
+  if [ -r "${config_target}" ]; then
+    config_persist_readable=1
+  fi
+fi
+
+symlink_ok=0
+if [ "${config_persist_present}" -eq 1 ] && [ -L "${APP_ROOT}/config.php" ]; then
+  if [ "${config_root_realpath}" = "${config_target}" ]; then
+    symlink_ok=1
+  fi
+fi
+
+config_present=0
+config_path="none"
+if [ "${config_root_present}" -eq 1 ] && [ "${config_root_readable}" -eq 1 ]; then
+  config_present=1
+  config_path="${config_root_realpath}"
+fi
+
 config_target_readable=0
 config_target_writable=0
 if [ -f "${config_target}" ]; then
@@ -913,6 +930,35 @@ if [ -f "${override_target}" ]; then
     config_access_ok=0
   fi
 fi
+if [ "${config_persist_present}" -eq 1 ] && [ "${symlink_ok}" -ne 1 ]; then
+  config_access_ok=0
+fi
+
+install_state=""
+if db_has_suitecrm_tables; then
+  if [ "${config_present}" -eq 1 ]; then
+    install_state="installed"
+  else
+    install_state="needs_config"
+  fi
+else
+  install_state="needs_install"
+fi
+
+echo "[entrypoint] --- CONFIG_DIAGNOSTICS ---"
+echo "[entrypoint] CONFIG_PRESENT=${config_present} CONFIG_PATH=${config_path}"
+echo "[entrypoint] CONFIG_ROOT_PRESENT=${config_root_present} CONFIG_ROOT_READABLE=${config_root_readable} CONFIG_ROOT_REALPATH=${config_root_realpath}"
+echo "[entrypoint] CONFIG_PERSIST_PRESENT=${config_persist_present} CONFIG_PERSIST_READABLE=${config_persist_readable} SYMLINK_OK=${symlink_ok}"
+echo "[entrypoint] DB_TABLES_EXIST=${db_tables_exist} DB_CORE_TABLE_COUNT=${db_core_table_count} DB_USERS_COUNT=${db_users_count}"
+echo "[entrypoint] INSTALL_STATE=${install_state} FINAL_INSTALL_STATE=${install_state}"
+if [ -e "${APP_ROOT}/config.php" ]; then
+  ls -la "${APP_ROOT}/config.php" || true
+fi
+if [ -e "${PERSIST_CONFIG_DIR}/config.php" ]; then
+  ls -la "${PERSIST_CONFIG_DIR}/config.php" || true
+fi
+echo "[entrypoint] --- END CONFIG_DIAGNOSTICS ---"
+
 if [ "${config_access_ok}" -ne 1 ]; then
   echo "[entrypoint] Config access check failed"
   echo "[entrypoint] www-data uid/gid:"
