@@ -69,11 +69,104 @@ mask_value() {
   printf '%s****%s' "${value:0:2}" "${value: -2}"
 }
 
+now_iso() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log_info() {
+  echo "[entrypoint] $*"
+}
+
+log_fatal() {
+  echo "[entrypoint] FATAL: $*"
+  exit 1
+}
+
 php_escape() {
   local value="$1"
   value="${value//\\/\\\\}"
   value="${value//\'/\\\'}"
   printf '%s' "${value}"
+}
+
+read_lock_json() {
+  local lock_file="$1"
+  lock_present=0
+  lock_db_target=""
+  lock_db_host=""
+  lock_db_name=""
+  lock_db_user=""
+  lock_db_fingerprint=""
+  lock_first_seen_at=""
+  lock_last_seen_at=""
+  lock_last_db_table_count="0"
+
+  if [ ! -f "${lock_file}" ]; then
+    return 1
+  fi
+
+  lock_present=1
+
+  if command -v jq >/dev/null 2>&1 && head -c 1 "${lock_file}" 2>/dev/null | grep -q '{'; then
+    lock_db_target="$(jq -r '.db_target // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_db_host="$(jq -r '.db_host // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_db_name="$(jq -r '.db_name // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_db_user="$(jq -r '.db_user // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_db_fingerprint="$(jq -r '.db_fingerprint // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_first_seen_at="$(jq -r '.first_seen_at // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_last_seen_at="$(jq -r '.last_seen_at // empty' "${lock_file}" 2>/dev/null || true)"
+    lock_last_db_table_count="$(jq -r '.last_db_table_count // 0' "${lock_file}" 2>/dev/null || true)"
+  else
+    while IFS='=' read -r key value; do
+      case "${key}" in
+        DB_TARGET) lock_db_target="${value}" ;;
+        DB_HOST) lock_db_host="${value}" ;;
+        DB_NAME) lock_db_name="${value}" ;;
+        DB_USER) lock_db_user="${value}" ;;
+        DB_FINGERPRINT) lock_db_fingerprint="${value}" ;;
+        FIRST_SEEN_AT) lock_first_seen_at="${value}" ;;
+        LAST_SEEN_AT) lock_last_seen_at="${value}" ;;
+        LAST_DB_TABLE_COUNT) lock_last_db_table_count="${value}" ;;
+      esac
+    done < "${lock_file}"
+  fi
+
+  case "${lock_last_db_table_count}" in
+    ''|*[!0-9]*) lock_last_db_table_count="0" ;;
+  esac
+
+  return 0
+}
+
+write_lock_json() {
+  local lock_file="$1"
+  local now="$2"
+  local first_seen="$3"
+
+  if command -v jq >/dev/null 2>&1; then
+    jq -n \
+      --arg db_target "${db_target}" \
+      --arg db_host "${db_host}" \
+      --arg db_name "${db_name}" \
+      --arg db_user "${db_user}" \
+      --arg db_fingerprint "${db_fingerprint}" \
+      --arg first_seen_at "${first_seen}" \
+      --arg last_seen_at "${now}" \
+      --arg last_db_table_count "${db_core_table_count}" \
+      '{db_target:$db_target,db_host:$db_host,db_name:$db_name,db_user:$db_user,db_fingerprint:$db_fingerprint,first_seen_at:$first_seen_at,last_seen_at:$last_seen_at,last_db_table_count:($last_db_table_count|tonumber? // 0)}' \
+      > "${lock_file}"
+  else
+    cat > "${lock_file}" <<EOF
+DB_TARGET=${db_target}
+DB_HOST=${db_host}
+DB_NAME=${db_name}
+DB_USER=${db_user}
+DB_FINGERPRINT=${db_fingerprint}
+FIRST_SEEN_AT=${first_seen}
+LAST_SEEN_AT=${now}
+LAST_DB_TABLE_COUNT=${db_core_table_count}
+EOF
+  fi
 }
 
 hash_value() {
@@ -299,6 +392,9 @@ db_password="${DB_PASSWORD:-}"
 db_unique_key=""
 db_allow_schema_init="${DB_ALLOW_SCHEMA_INIT:-0}"
 db_require_persistent="${DB_REQUIRE_PERSISTENT:-1}"
+suitecrm_force_fresh_install="${SUITECRM_FORCE_FRESH_INSTALL:-0}"
+suitecrm_db_lock="${SUITECRM_DB_LOCK:-1}"
+suitecrm_db_lock_reset="${SUITECRM_DB_LOCK_RESET:-0}"
 db_fingerprint_table="${DB_FINGERPRINT_TABLE:-users}"
 db_fingerprint_table="$(printf '%s' "${db_fingerprint_table}" | tr ',' ' ' | awk '{print $1}')"
 if [ -z "${db_fingerprint_table}" ]; then
@@ -473,13 +569,17 @@ if [ "${db_require_persistent}" != "0" ]; then
   esac
 fi
 
+db_target="mysql"
 echo "[entrypoint] DB_HOST=${db_host}"
 echo "[entrypoint] DB_NAME=${db_name}"
 echo "[entrypoint] DB_REQUIRE_PERSISTENT=${db_require_persistent}"
 echo "[entrypoint] DB_ALLOW_SCHEMA_INIT=${db_allow_schema_init}"
+echo "[entrypoint] SUITECRM_FORCE_FRESH_INSTALL=${suitecrm_force_fresh_install}"
+echo "[entrypoint] SUITECRM_DB_LOCK=${suitecrm_db_lock}"
+echo "[entrypoint] SUITECRM_DB_LOCK_RESET=${suitecrm_db_lock_reset}"
 masked_host="$(mask_value "${db_host}")"
 masked_user="$(mask_value "${db_user}")"
-echo "[entrypoint] DB_TARGET=mysql host=${masked_host} port=${db_port} db=${db_name} user=${masked_user} source=${db_source}"
+echo "[entrypoint] DB_TARGET=${db_target} host=${masked_host} port=${db_port} db=${db_name} user=${masked_user} source=${db_source}"
 
 db_check_script="$(mktemp)"
 cat > "${db_check_script}" <<'PHP'
@@ -610,14 +710,19 @@ db_check_status=$?
 set -e
 rm -f "${db_check_script}"
 if [ "${db_check_status}" -ne 0 ]; then
+  if grep -qi "postgres" "${db_check_error}"; then
+    cat "${db_check_error}" || true
+    rm -f "${db_check_error}"
+    log_fatal "You are pointing SuiteCRM at Postgres. SuiteCRM requires MySQL/MariaDB. Recommended fix: check Railway service variables for MySQL vs Postgres."
+  fi
   if grep -q "schema_inspect_denied" "${db_check_error}"; then
-    echo "[entrypoint] FATAL: DB connected but insufficient privileges to inspect schema/tables (check DB_USER grants)"
-  else
-    echo "[entrypoint] FATAL: database connectivity/schema check failed"
+    cat "${db_check_error}" || true
+    rm -f "${db_check_error}"
+    log_fatal "DB connected but insufficient privileges to inspect schema/tables (check DB_USER grants)."
   fi
   cat "${db_check_error}" || true
   rm -f "${db_check_error}"
-  exit 1
+  log_fatal "Database connectivity/schema check failed."
 fi
 rm -f "${db_check_error}"
 
@@ -657,43 +762,90 @@ else
 fi
 echo "[entrypoint] DB_SERVER=version:${db_server_version} ${db_server_identity}"
 
+db_server_version_lc="$(printf '%s' "${db_server_version}" | tr '[:upper:]' '[:lower:]')"
+if echo "${db_server_version_lc}" | grep -q "postgres"; then
+  log_fatal "You are pointing SuiteCRM at Postgres. SuiteCRM requires MySQL/MariaDB. Recommended fix: check Railway service variables for MySQL vs Postgres."
+fi
+
 fingerprint_input="mysql:${db_server_version}|db:${db_name}|tables:${db_core_table_count}|users:${db_users_count}"
 db_fingerprint="$(hash_value "${fingerprint_input}")"
 echo "[entrypoint] DB_FINGERPRINT=${db_fingerprint}"
 
-db_fingerprint_file="${PERSIST_CONFIG_DIR}/last_db_fingerprint.txt"
-prev_db_fingerprint=""
-if [ -f "${db_fingerprint_file}" ]; then
-  while IFS='=' read -r key value; do
-    case "${key}" in
-    DB_FINGERPRINT) prev_db_fingerprint="${value}" ;;
-    esac
-  done < "${db_fingerprint_file}"
+db_lock_file="${PERSIST_CONFIG_DIR}/.db_lock.json"
+db_empty=0
+if [ "${db_core_table_count}" = "0" ]; then
+  db_empty=1
 fi
 
-db_fingerprint_changed=0
-if [ -n "${prev_db_fingerprint}" ] && [ "${prev_db_fingerprint}" != "${db_fingerprint}" ]; then
-  db_fingerprint_changed=1
+fresh_install_forced=0
+if [ "${suitecrm_force_fresh_install}" = "1" ]; then
+  fresh_install_forced=1
 fi
 
-if [ -n "${prev_db_fingerprint}" ] && [ "${db_tables_exist}" != "1" ] && [ "${db_allow_schema_init}" != "1" ]; then
-  echo "[entrypoint] FATAL: DB appears empty but previously had tables. This indicates non-persistent DB or wrong DB_* vars."
-  exit 1
+db_lock_enabled=1
+if [ "${suitecrm_db_lock}" = "0" ]; then
+  db_lock_enabled=0
 fi
 
-if ! cat > "${db_fingerprint_file}" <<EOF
-DB_FINGERPRINT=${db_fingerprint}
-DB_TABLES_EXIST=${db_tables_exist}
-DB_CORE_TABLE_COUNT=${db_core_table_count}
-DB_USERS_COUNT=${db_users_count}
-DB_SERVER_VERSION=${db_server_version}
-DB_NAME=${db_name}
-EOF
-then
-  echo "[entrypoint] Warning: failed to write ${db_fingerprint_file}"
+lock_present=0
+lock_fingerprint_matches=0
+lock_last_db_table_count="0"
+lock_first_seen_at=""
+
+if [ "${db_lock_enabled}" -eq 1 ]; then
+  if [ "${suitecrm_db_lock_reset}" = "1" ]; then
+    log_info "DB lock reset requested; clearing ${db_lock_file}"
+    rm -f "${db_lock_file}"
+  fi
+
+  read_lock_json "${db_lock_file}" || true
+
+  if [ "${fresh_install_forced}" -eq 1 ] && [ "${db_empty}" -eq 1 ]; then
+    log_info "Fresh install forced and DB empty; clearing DB lock/sentinels"
+    rm -f "${db_lock_file}" "${PERSIST_CONFIG_DIR}/last_db_fingerprint.txt" "${PERSIST_CONFIG_DIR}/install.disabled.marker"
+    lock_present=0
+  fi
+
+  if [ "${lock_present}" -eq 1 ] && [ -n "${lock_db_fingerprint}" ] && [ "${lock_db_fingerprint}" = "${db_fingerprint}" ]; then
+    lock_fingerprint_matches=1
+  fi
+
+  if [ "${lock_present}" -eq 1 ]; then
+    if [ "${lock_fingerprint_matches}" -ne 1 ] && [ "${suitecrm_db_lock_reset}" != "1" ]; then
+      log_fatal "DB lock mismatch: fingerprint differs from lock. Set SUITECRM_DB_LOCK_RESET=1 to accept this DB. Recommended fix: check Railway service variables for MySQL vs Postgres."
+    fi
+
+    if [ "${db_empty}" -eq 1 ] && [ "${lock_last_db_table_count}" -gt 0 ] && [ "${fresh_install_forced}" -ne 1 ]; then
+      log_fatal "DB empty but lock indicates prior tables (${lock_last_db_table_count}). Set SUITECRM_FORCE_FRESH_INSTALL=1 to allow a clean install. Recommended fix: check Railway service variables for MySQL vs Postgres."
+    fi
+  fi
+
+  db_fingerprint_changed=0
+  if [ "${lock_present}" -eq 1 ] && [ -n "${lock_db_fingerprint}" ] && [ "${lock_db_fingerprint}" != "${db_fingerprint}" ]; then
+    db_fingerprint_changed=1
+  fi
+
+  now_ts="$(now_iso)"
+  first_seen="${lock_first_seen_at:-${now_ts}}"
+  if ! write_lock_json "${db_lock_file}" "${now_ts}" "${first_seen}"; then
+    log_info "Warning: failed to write ${db_lock_file}"
+  fi
+else
+  db_fingerprint_changed=0
 fi
 
-if [ "${db_tables_exist}" != "1" ] && [ "${db_allow_schema_init}" != "1" ]; then
+db_allow_schema_init_effective="${db_allow_schema_init}"
+if [ "${fresh_install_forced}" -eq 1 ] && [ "${db_empty}" -eq 1 ]; then
+  db_allow_schema_init_effective="1"
+fi
+
+echo "[entrypoint] DB_EMPTY=$([ "${db_empty}" -eq 1 ] && echo yes || echo no)"
+echo "[entrypoint] DB_LOCK_PRESENT=$([ "${lock_present}" -eq 1 ] && echo yes || echo no)"
+echo "[entrypoint] DB_LOCK_FINGERPRINT_MATCHES=$([ "${lock_fingerprint_matches}" -eq 1 ] && echo yes || echo no)"
+echo "[entrypoint] FRESH_INSTALL_FORCED=$([ "${fresh_install_forced}" -eq 1 ] && echo yes || echo no)"
+echo "[entrypoint] DB_ALLOW_SCHEMA_INIT_EFFECTIVE=${db_allow_schema_init_effective}"
+
+if [ "${db_empty}" -eq 1 ] && [ "${db_allow_schema_init_effective}" != "1" ]; then
   echo "[entrypoint] DB empty; installer will be available (DB_ALLOW_SCHEMA_INIT=0)"
 fi
 

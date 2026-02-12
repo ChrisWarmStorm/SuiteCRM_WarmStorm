@@ -26,6 +26,9 @@ Set these in the web service (and the worker service if you run one). You can ei
 - `DB_REQUIRE_PERSISTENT` = `1` (default)
 - `DB_ALLOW_SCHEMA_INIT` = `0` (default; set to `1` only for first-time install)
 - `DB_FINGERPRINT_TABLE` = `users`
+- `SUITECRM_DB_LOCK` = `1` (default)
+- `SUITECRM_DB_LOCK_RESET` = `0` (default; set to `1` to accept a different DB)
+- `SUITECRM_FORCE_FRESH_INSTALL` = `0` (default; set to `1` only when DB is empty and you want a clean install)
 
 Optional:
 
@@ -51,6 +54,9 @@ PUBLIC_URL=https://your-app.up.railway.app
 DB_REQUIRE_PERSISTENT=1
 DB_ALLOW_SCHEMA_INIT=1   # first install only; switch to 0 after installer completes
 DB_FINGERPRINT_TABLE=users
+SUITECRM_DB_LOCK=1
+SUITECRM_DB_LOCK_RESET=0
+SUITECRM_FORCE_FRESH_INSTALL=0
 # Do not set DB_*; Railway provides MYSQLHOST/MYSQLUSER/MYSQLPASSWORD/MYSQLDATABASE/MYSQLPORT
 ```
 
@@ -68,8 +74,10 @@ DB_FINGERPRINT_TABLE=users
 - Fails fast if DB env vars are missing or DB connectivity fails.
 - Refuses `DB_HOST=localhost` / `127.0.0.1` / `::1` when `DB_REQUIRE_PERSISTENT=1`.
 - Performs read-only schema checks and logs a sanitized DB fingerprint.
+- Enforces a DB lock (`.db_lock.json`) and refuses to run if the DB fingerprint changes (unless `SUITECRM_DB_LOCK_RESET=1`).
+- If DB is empty but the lock indicates prior tables, it exits unless `SUITECRM_FORCE_FRESH_INSTALL=1`.
 - If DB has SuiteCRM tables and `config.php` is missing/empty, it regenerates `config.php` from env vars (no installer run).
-- If DB is empty and `DB_ALLOW_SCHEMA_INIT=0`, the container exits with a clear error.
+- Detects Postgres connections and fails fast with a clear message.
 - Installer directory is disabled when a schema exists.
 
 ## Evidence Logs (Expected on Boot)
@@ -86,11 +94,18 @@ Good boot logs include:
 - `[entrypoint] DB_SERVER=version:<version> host:<masked>`
 - `[entrypoint] DB_REQUIRE_PERSISTENT=1`
 - `[entrypoint] DB_ALLOW_SCHEMA_INIT=0`
+- `[entrypoint] SUITECRM_DB_LOCK=1`
+- `[entrypoint] SUITECRM_DB_LOCK_RESET=0`
+- `[entrypoint] SUITECRM_FORCE_FRESH_INSTALL=0`
 - `[entrypoint] DB_TABLES_EXIST=0|1`
 - `[entrypoint] DB_CORE_TABLE_COUNT=<n>`
 - `[entrypoint] DB_USERS_COUNT=<n>`
 - `[entrypoint] DB_SCHEMA_MUTATION=0`
 - `[entrypoint] DB_FINGERPRINT=<hash>`
+- `[entrypoint] DB_EMPTY=yes|no`
+- `[entrypoint] DB_LOCK_PRESENT=yes|no`
+- `[entrypoint] DB_LOCK_FINGERPRINT_MATCHES=yes|no`
+- `[entrypoint] FRESH_INSTALL_FORCED=yes|no`
 - `[entrypoint] INSTALLER_DISABLED=0|1 reason=<reason>`
 
 If `PUBLIC_URL` is set:

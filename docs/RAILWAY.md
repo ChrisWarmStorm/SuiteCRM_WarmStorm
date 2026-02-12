@@ -24,6 +24,9 @@ Set these in **both** services:
 - `DB_REQUIRE_PERSISTENT` (default `1`)
 - `DB_ALLOW_SCHEMA_INIT` (default `0`, set to `1` only for first-time install)
 - `DB_FINGERPRINT_TABLE` (default `users`)
+- `SUITECRM_DB_LOCK` (default `1`)
+- `SUITECRM_DB_LOCK_RESET` (default `0`, set to `1` to accept a different DB)
+- `SUITECRM_FORCE_FRESH_INSTALL` (default `0`, set to `1` only when DB is empty and you want a clean install)
 - `DATABASE_URL` (optional; `mysql://user:pass@host:port/dbname`, only used if DB_* values are unset)
 
 Railway MySQL/MariaDB mapping (plugin var names vary by plugin/version):
@@ -90,7 +93,8 @@ Note on config persistence:
 
 - The entrypoint seeds `config_override.php` from `config_override.php.dist` and symlinks `config.php` and `config_override.php` into `PERSIST_CONFIG_DIR` (default is `custom`).
 - To persist config, mount a volume for the `custom` directory (or set `PERSIST_CONFIG_DIR` to a different mounted path).
- - The entrypoint will disable the installer after install when it detects an existing DB schema.
+- The entrypoint will disable the installer after install when it detects an existing DB schema.
+- The entrypoint writes a DB lock file at `PERSIST_CONFIG_DIR/.db_lock.json` to prevent accidental DB swaps.
 
 ## First-Time Install
 
@@ -101,6 +105,13 @@ Note on config persistence:
 4. Use the same `DB_*` values configured in Railway.
 5. Set the **Site URL** to `PUBLIC_URL`.
 6. After install, set `DB_ALLOW_SCHEMA_INIT=0` and redeploy.
+
+Forced fresh install (empty DB only):
+
+1. Confirm the DB has **no tables**.
+2. Set `SUITECRM_FORCE_FRESH_INSTALL=1` and deploy.
+3. Complete the installer.
+4. Set `SUITECRM_FORCE_FRESH_INSTALL=0` and redeploy.
 
 ## Reverse Proxy and HTTPS
 
